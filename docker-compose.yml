@@ -1,0 +1,18 @@
+services:
+  nxthub-bot:
+    build: .
+    container_name: nxthub-leech-bot
+    restart: unless-stopped
+    pull_policy: build
+    volumes:
+      - ./downloads:/downloads
+      - ./data:/app/data
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

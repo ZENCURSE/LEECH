@@ -1,0 +1,45 @@
+# ── Telegram ──────────────────────────────────────────────────
+pyrofork
+TgCrypto
+
+# ── Download ──────────────────────────────────────────────────
+yt-dlp
+aiohttp
+aiofiles
+mega.py
+aria2p
+
+# ── Media / Encode ────────────────────────────────────────────
+hachoir
+Pillow
+python-magic
+ffmpeg-python
+
+# ── Web / HTTP ────────────────────────────────────────────────
+requests
+beautifulsoup4
+lxml
+cloudscraper
+httpx
+js2py
+pySmartDL
+lk21
+
+# ── Database ──────────────────────────────────────────────────
+motor
+dnspython
+python-dotenv
+
+# ── Misc ──────────────────────────────────────────────────────
+uvloop
+psutil
+speedtest-cli
+
+# ── Google Drive (optional) ───────────────────────────────────
+google-api-core
+google-auth
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+oauth2client<4.0.0
+httplib2==0.18.0
