@@ -180,10 +180,16 @@ async def encsub_receive_video(client: Client, message: Message):
         _encsub_state.pop(uid, None)
         return
 
+    clean_name = os.path.splitext(fname)[0]
+    # Strip UUID-style names (32 hex chars)
+    import re as _re
+    if _re.match(r'^[0-9a-f]{32}', clean_name):
+        clean_name = "video"
+
     _encsub_state[uid] = {"step": "sub", "video_path": dest, "work_dir": work_dir, "msg": msg}
 
     await msg.edit_text(
-        "✅ <b>Video received!</b>\n\n"
+        f"✅ <b>Video received!</b> — <code>{clean_name}</code>\n\n"
         "📄 <b>Step 2/2 — Send your subtitle file</b>\n\n"
         "Supported: <code>.srt .ass .ssa .vtt .sub</code>\n\n"
         "<i>Waiting 2 minutes…</i>",

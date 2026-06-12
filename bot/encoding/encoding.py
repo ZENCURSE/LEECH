@@ -165,13 +165,32 @@ async def encode(filepath, message, msg, audio_map=None, external_sub=None):
     else:
         codec += ' -pix_fmt yuv420p10le'
 
-    # CRF
+    # CRF — smart default based on source bitrate to avoid size inflation
+    # Lower CRF = better quality but BIGGER file (0=lossless, 51=worst)
+    # Rule: if source is already compressed at low bitrate, use higher CRF
+    # to avoid re-encoding to a bigger file than the original
     crf = await db.get_crf(message.from_user.id)
-    if crf:
-        Crf = f'-crf {crf}'
-    else:
-        await db.set_crf(message.from_user.id, crf=26)
-        Crf = '-crf 26'
+    if not crf:
+        crf = 26
+        await db.set_crf(message.from_user.id, crf)
+
+    # Auto-adjust: if source bitrate < 2 Mbps, bump CRF up to avoid inflation
+    try:
+        import subprocess as _sp, json as _json
+        _probe = _sp.check_output([
+            'ffprobe', '-v', 'error',
+            '-show_entries', 'format=bit_rate',
+            '-of', 'json', filepath
+        ]).decode()
+        _src_kbps = int(_json.loads(_probe)['format'].get('bit_rate', 0)) // 1000
+        if _src_kbps and _src_kbps < 2000 and crf < 28:
+            crf = 28   # prevent inflating low-bitrate sources
+        elif _src_kbps and _src_kbps > 8000 and crf > 24:
+            crf = 22   # high-bitrate source — compress more aggressively
+    except Exception:
+        pass
+
+    Crf = f'-crf {crf}'
 
     # Frame
     fr = await db.get_frame(message.from_user.id)
@@ -375,16 +394,55 @@ async def encode(filepath, message, msg, audio_map=None, external_sub=None):
 
     finish = '-threads 8'
 
+    import shlex as _shlex
     # Finally
     command = ['ffmpeg', '-hide_banner', '-loglevel', 'error',
                '-progress', progress, '-hwaccel', 'auto', '-y', '-i', filepath]
-    command.extend((codec.split() + preset.split() + frame.split() + tunevideo.split() + aspect.split() + video_opts.split() + Crf.split() +
-                   watermark.split() + metadata.split() + subtitles.split() + audio_opts.split() + channels.split() + finish.split()))
-    proc = await asyncio.create_subprocess_exec(*command, output_filepath, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    # Progress Bar
-    await handle_progress(proc, msg, message, filepath, progress, status)
-    # Wait for the subprocess to finish
-    stdout, stderr = await proc.communicate()
+    # Use shlex.split for all args EXCEPT watermark — watermark contains a
+    # quoted subtitles= filter with file paths that must NOT be word-split.
+    # We split watermark manually: extract -vf and its value as two clean args.
+    def _safe_split(s):
+        s = s.strip()
+        if not s:
+            return []
+        try:
+            return _shlex.split(s)
+        except ValueError:
+            return s.split()
+
+    command.extend(
+        _safe_split(codec) + _safe_split(preset) + _safe_split(frame) +
+        _safe_split(tunevideo) + _safe_split(aspect) + _safe_split(video_opts) +
+        _safe_split(Crf) + _safe_split(metadata) + _safe_split(subtitles) +
+        _safe_split(audio_opts) + _safe_split(channels) + _safe_split(finish)
+    )
+    # Add watermark/-vf as separate properly-quoted args
+    if watermark:
+        # watermark is like: '-vf scale=1280:720,subtitles=\'path\''
+        # split only on the first space to get ['-vf', 'filter_value']
+        vf_parts = watermark.split(' ', 1)
+        command.extend(vf_parts)
+
+    proc = await asyncio.create_subprocess_exec(
+        *command, output_filepath,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    # Run progress polling and proc.communicate() concurrently
+    # Previously handle_progress ran BEFORE communicate() which meant
+    # proc.returncode was always None and the loop never saw 'end'
+    stdout_bytes, stderr_bytes = b'', b''
+    async def _wait():
+        nonlocal stdout_bytes, stderr_bytes
+        stdout_bytes, stderr_bytes = await proc.communicate()
+
+    await asyncio.gather(
+        handle_progress(proc, msg, message, filepath, progress, status),
+        _wait(),
+    )
+    stdout, stderr = stdout_bytes, stderr_bytes
+    stdout, stderr = stdout.decode().strip(), stderr.decode().strip()
     e_response = stderr.decode().strip()
     t_response = stdout.decode().strip()
     LOGGER.error(f"FFmpeg stderr: {e_response}")
