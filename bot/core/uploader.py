@@ -258,7 +258,12 @@ async def _send(client, chat_id, path, caption, thumb, cb, as_doc):
 # ── Main upload function ──────────────────────────────────────
 async def upload_file(client, chat_id: int, file_path: str,
                       task_id: str, msg, uid: int,
-                      origin_msg=None, is_group: bool = False) -> None:
+                      origin_msg=None, is_group: bool = False,
+                      progress_msg=None) -> None:
+    """
+    progress_msg: if provided (encode flow), upload progress is edited
+                  directly on this message rather than via status loop.
+    """
 
     if not os.path.isfile(file_path):
         raise FileNotFoundError(f"Not found: {file_path}")
@@ -349,20 +354,46 @@ async def upload_file(client, chat_id: int, file_path: str,
                            total=part_size, speed=0.0, eta=0.0, status="uploading")
 
         _state = {"last_t": time.monotonic(), "last_b": 0}
+        _SEP   = "━━━━━━━━━━━━━━━━━━━━━━━━"
 
         async def _cb(current, total,
-                      _pn=part_name, _tid=task_id, _st=_state):
+                      _pn=part_name, _tid=task_id, _st=_state,
+                      _pmsg=progress_msg):
             now = time.monotonic()
             dt  = now - _st["last_t"]
             if dt < config.PROGRESS_UPDATE_SEC: return
             speed = (current - _st["last_b"]) / dt if dt > 0 else 0.0
             eta   = (total - current) / speed if speed > 0 else 0.0
             _st["last_t"] = now; _st["last_b"] = current
-            # Only update task_manager — status card refresh loop reads this
-            # and updates the single status message. Never edit msg directly
-            # here or it fights the refresh loop causing the flickering.
             tm.update_progress(_tid, name=_pn, done=current,
                                total=total, speed=speed, eta=eta, status="uploading")
+            # For encode flow: edit msg directly (no status loop running)
+            if _pmsg:
+                pct    = int(current * 100 / total) if total else 0
+                filled = int(pct / 10)
+                bar    = "█" * filled + "░" * (10 - filled)
+                hspd   = f"{speed/1024/1024:.1f} MB/s" if speed >= 1024*1024 else f"{speed/1024:.1f} KB/s"
+                hsize  = f"{current/1024/1024:.1f} MB" if current >= 1024*1024 else f"{current/1024:.1f} KB"
+                htotal = f"{total/1024/1024:.1f} MB"   if total   >= 1024*1024 else f"{total/1024:.1f} KB"
+                mm, ss = divmod(int(eta), 60)
+                eta_s  = f"{mm}m {ss}s" if mm else f"{ss}s"
+                stem   = (_pn[:36] + "…") if len(_pn) > 38 else _pn
+                try:
+                    await _pmsg.edit_text(
+                        f"<b>{_SEP}</b>\n"
+                        f"<b>📤  UPLOADING</b>\n"
+                        f"<b>{_SEP}</b>\n\n"
+                        f"🎬 <b>{stem}</b>\n\n"
+                        f"<b><code>{bar}</code>  {pct}%</b>\n\n"
+                        f"📦 <b>{hsize}</b> / <b>{htotal}</b>\n"
+                        f"⚡ <b>{hspd}</b>\n"
+                        f"🕐 <b>ETA: {eta_s}</b>\n\n"
+                        f"<b>{_SEP}</b>\n"
+                        f"<b>⚡ {config.WATERMARK}</b>",
+                        parse_mode="html",
+                    )
+                except Exception:
+                    pass
 
         # Caption = bold filename + token info block inside <blockquote>
         # The blockquote renders as Telegram's native "quote" style (grey bar on left)

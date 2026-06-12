@@ -62,6 +62,7 @@ async def handle_encode(filepath: str, message, msg, external_sub: str = None, a
         await upload_file(
             uclient, uid, out, task_id, msg, uid,
             origin_msg=message, is_group=False,
+            progress_msg=msg,   # encode flow — edit msg directly, no status loop
         )
     except Exception as e:
         log.error(f"Upload after encode failed: {e}")

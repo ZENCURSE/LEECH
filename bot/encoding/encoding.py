@@ -598,6 +598,25 @@ async def handle_progress(proc, msg, message, filepath,
         prog_list  = re.findall(r"progress=(\w+)", text)
 
         if prog_list and prog_list[-1] == "end":
+            # Show encode complete card before upload starts
+            elapsed_enc = time.time() - COMPRESSION_START_TIME
+            em, es = divmod(int(elapsed_enc), 60)
+            eh, em = divmod(em, 60)
+            elapsed_str = f"{eh}h {em}m {es}s" if eh else (f"{em}m {es}s" if em else f"{es}s")
+            try:
+                await msg.edit_text(
+                    f"<b>{SEP}</b>\n"
+                    f"<b>✅  ENCODING COMPLETE</b>\n"
+                    f"<b>{SEP}</b>\n\n"
+                    f"🎬 <b>{stem}</b>\n\n"
+                    f"<b><code>{'█' * 12}</code>  100%</b>\n\n"
+                    f"⏱ <b>Took:</b> {elapsed_str}\n\n"
+                    f"<b>{SEP}</b>\n"
+                    f"<i>📤 Starting upload…</i>",
+                    parse_mode="html",
+                )
+            except Exception:
+                pass
             break
 
         elapsed_enc  = time.time() - COMPRESSION_START_TIME
