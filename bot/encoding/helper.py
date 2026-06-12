@@ -1,5 +1,6 @@
 """
-Encoding helper — bridges ENCODING-BOT's encode() with NXTL's uploader.
+Encoding helper — bridges encoding.py with NXTL's uploader.
+Supports external subtitle injection for hardsub via /encsub.
 """
 import os
 import shutil
@@ -9,9 +10,13 @@ import config
 log = logging.getLogger("encoding")
 
 
-async def handle_encode(filepath: str, message, msg, audio_map=None):
+async def handle_encode(filepath: str, message, msg, external_sub: str = None, audio_map=None):
     """
     Encode filepath with user's settings, then upload via NXTL uploader.
+
+    external_sub: path to an external .ass/.srt subtitle file.
+                  When provided, hardsub is forced ON using this file
+                  regardless of the user's hardsub toggle setting.
     """
     uid     = message.from_user.id
     enc_dir = getattr(config, "ENCODE_DIR", config.DOWNLOAD_DIR + "_enc")
@@ -20,7 +25,11 @@ async def handle_encode(filepath: str, message, msg, audio_map=None):
     from bot.encoding.encoding import encode
 
     try:
-        out = await encode(filepath, message, msg, audio_map=audio_map)
+        out = await encode(
+            filepath, message, msg,
+            audio_map=audio_map,
+            external_sub=external_sub,
+        )
     except Exception as e:
         log.error(f"Encode failed: {e}")
         try:
@@ -65,12 +74,12 @@ async def handle_encode(filepath: str, message, msg, audio_map=None):
             pass
     finally:
         tm.finish_task(task_id)
-        # Cleanup source + encoded files
-        for p in (filepath, out):
+        for p in (filepath, out, external_sub):
+            if not p:
+                continue
             try:
                 parent = os.path.dirname(p)
                 base   = config.DOWNLOAD_DIR.rstrip("/")
-                # Only remove subdirs of DOWNLOAD_DIR, not the root itself
                 if len(parent) > len(base) and parent.startswith(base):
                     shutil.rmtree(parent, ignore_errors=True)
                 elif os.path.isfile(p):

@@ -80,7 +80,7 @@ async def extract_subs(filepath, msg, user_id):
         return None
 
 
-async def encode(filepath, message, msg, audio_map=None):
+async def encode(filepath, message, msg, audio_map=None, external_sub=None):
 
     ex = await db.get_extensions(message.from_user.id)
     path, extension = os.path.splitext(filepath)
@@ -95,6 +95,16 @@ async def encode(filepath, message, msg, audio_map=None):
 
     output_filepath = output_filepathh
     subtitles_path = os.path.join(encode_dir, str(msg.id) + '.ass')
+
+    # If external subtitle provided (via /encsub), use it directly
+    # and force hardsub ON — user explicitly uploaded a sub file
+    _force_hardsub = False
+    if external_sub and os.path.isfile(external_sub):
+        subtitles_path = external_sub
+        _force_hardsub = True
+        LOGGER.info(f'Using external subtitle: {external_sub}')
+    else:
+        subtitles_path = await extract_subs(filepath, msg, message.from_user.id) or subtitles_path
 
     # Use a per-message unique progress file to avoid collisions
     _enc_tmp = os.path.join(download_dir, f"enc_{msg.id}")
@@ -222,6 +232,8 @@ async def encode(filepath, message, msg, audio_map=None):
     # Softsub  = copy subtitle stream alongside video (user can toggle in player)
     # Both can be active simultaneously — hardsub burns a copy, softsub keeps stream
     h      = await db.get_hardsub(message.from_user.id)
+    if _force_hardsub:
+        h = True   # external sub was provided — always burn it in
     s      = await db.get_subtitles(message.from_user.id)
     subs_i = get_codec(filepath, channel='s:0')
     has_subs = subs_i not in ([], None, 'pgs')   # pgs = bitmap subs, can't burn

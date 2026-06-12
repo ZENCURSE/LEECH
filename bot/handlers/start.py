@@ -75,6 +75,8 @@ HELP_TEXT = (
     "╔═ 🎬 <b>ENCODING</b> ══════════════════╗\n"
     "  <code>/encode</code>       — reply to a video to encode\n"
     "  <code>/encurl &lt;url&gt;</code> — download + encode URL\n"
+    "  <code>/encsub</code>       — video + subtitle → hardsub\n"
+    "  <code>/encsub &lt;v_url&gt; &lt;s_url&gt;</code> — both as URLs\n"
     "  <code>/encset</code>       — open encode settings panel\n"
     "  <code>/vset</code>         — view current encode settings\n\n"
     "  <b>Configurable via /encset:</b>\n"

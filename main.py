@@ -70,6 +70,7 @@ async def main():
             BotCommand("cancel",   "🚫 Cancel a task"),
             BotCommand("encode",   "🎬 Encode a video (reply to file)"),
             BotCommand("encurl",   "🎬 Download & encode a URL"),
+            BotCommand("encsub",   "📄 Encode video + external subtitle (hardsub)"),
             BotCommand("encset",   "⚙️ Configure encoding settings"),
             BotCommand("vset",     "👁 View current encode settings"),
             BotCommand("settings", "⚙️ Personal leech settings"),
