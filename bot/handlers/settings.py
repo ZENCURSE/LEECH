@@ -189,6 +189,18 @@ async def cmd_settings(client: Client, message: Message):
 #  Callbacks
 # ══════════════════════════════════════════════
 
+async def _safe_cb_edit(cb, text, kb=None):
+    """Edit callback message, silently ignore MESSAGE_NOT_MODIFIED."""
+    try:
+        await cb.message.edit_text(
+            text, reply_markup=kb, parse_mode=enums.ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+    except Exception as e:
+        if "MESSAGE_NOT_MODIFIED" not in str(e):
+            raise
+
+
 @Client.on_callback_query(filters.regex(r"^stg_"))
 async def settings_cb(client: Client, cb: CallbackQuery):
     uid  = cb.from_user.id
@@ -196,43 +208,23 @@ async def settings_cb(client: Client, cb: CallbackQuery):
 
     # ── Navigation ─────────────────────────────
     if data == "stg_main":
-        await cb.message.edit_text(
-            _main_text(uid),
-            reply_markup=_main_settings_kb(),
-            parse_mode=enums.ParseMode.HTML,
-        )
+        await _safe_cb_edit(cb, _main_text(uid), _main_settings_kb())
         return await cb.answer()
 
     if data == "stg_sec:download":
-        await cb.message.edit_text(
-            _download_text(uid),
-            reply_markup=_download_kb(uid),
-            parse_mode=enums.ParseMode.HTML,
-        )
+        await _safe_cb_edit(cb, _download_text(uid), _download_kb(uid))
         return await cb.answer()
 
     if data == "stg_sec:upload":
-        await cb.message.edit_text(
-            _upload_text(uid),
-            reply_markup=_upload_kb(uid),
-            parse_mode=enums.ParseMode.HTML,
-        )
+        await _safe_cb_edit(cb, _upload_text(uid), _upload_kb(uid))
         return await cb.answer()
 
     if data == "stg_sec:encoding":
-        await cb.message.edit_text(
-            _encoding_text(),
-            reply_markup=_encoding_kb(uid),
-            parse_mode=enums.ParseMode.HTML,
-        )
+        await _safe_cb_edit(cb, _encoding_text(), _encoding_kb(uid))
         return await cb.answer()
 
     if data == "stg_sec:rename":
-        await cb.message.edit_text(
-            _rename_text(uid),
-            reply_markup=_rename_kb(uid),
-            parse_mode=enums.ParseMode.HTML,
-        )
+        await _safe_cb_edit(cb, _rename_text(uid), _rename_kb(uid))
         return await cb.answer()
 
     # ── Encoding section ────────────────────────
@@ -291,11 +283,7 @@ async def settings_cb(client: Client, cb: CallbackQuery):
                 except Exception: pass
         users_db.reset_settings(uid)
         await cb.answer("✅ All leech settings reset.")
-        await cb.message.edit_text(
-            _main_text(uid),
-            reply_markup=_main_settings_kb(),
-            parse_mode=enums.ParseMode.HTML,
-        )
+        await _safe_cb_edit(cb, _main_text(uid), _main_settings_kb())
         return
 
     if data == "stg_close":
@@ -307,11 +295,7 @@ async def settings_cb(client: Client, cb: CallbackQuery):
         s = users_db.get_settings(uid)
         users_db.update_settings(uid, as_doc=not s.get("as_doc", False))
         await cb.answer("Upload mode toggled.")
-        await cb.message.edit_text(
-            _upload_text(uid),
-            reply_markup=_upload_kb(uid),
-            parse_mode=enums.ParseMode.HTML,
-        )
+        await _safe_cb_edit(cb, _upload_text(uid), _upload_kb(uid))
         return
 
     # ── Thumbnail ──────────────────────────────
@@ -337,11 +321,7 @@ async def settings_cb(client: Client, cb: CallbackQuery):
             except Exception: pass
         users_db.update_settings(uid, thumb_path=None)
         await cb.answer("🗑 Thumbnail removed.")
-        await cb.message.edit_text(
-            _upload_text(uid),
-            reply_markup=_upload_kb(uid),
-            parse_mode=enums.ParseMode.HTML,
-        )
+        await _safe_cb_edit(cb, _upload_text(uid), _upload_kb(uid))
         return
 
     # ── Cookies ────────────────────────────────
@@ -364,11 +344,7 @@ async def settings_cb(client: Client, cb: CallbackQuery):
             except Exception: pass
         users_db.update_settings(uid, cookies_path=None)
         await cb.answer("🗑 Cookies removed.")
-        await cb.message.edit_text(
-            _download_text(uid),
-            reply_markup=_download_kb(uid),
-            parse_mode=enums.ParseMode.HTML,
-        )
+        await _safe_cb_edit(cb, _download_text(uid), _download_kb(uid))
         return
 
     # ── Prefix / Suffix / Regex / Caption / Dump ─

@@ -427,8 +427,9 @@ def _start_refresh_loop(uid: int):
     async def _loop():
         from bot.utils.progress import status_message
         from bot.handlers.status import _status_kb
+        last_text = ""
         while True:
-            await asyncio.sleep(3)  # refresh every 3 seconds
+            await asyncio.sleep(3)
             msg = _status_msgs.get(uid)
             if not msg:
                 break
@@ -437,9 +438,13 @@ def _start_refresh_loop(uid: int):
                 _status_msgs.pop(uid, None)
                 _refresh_tasks.pop(uid, None)
                 break
+            new_text = status_message(tasks)
+            if new_text == last_text:
+                continue
+            last_text = new_text
             try:
                 await msg.edit_text(
-                    status_message(tasks),
+                    new_text,
                     parse_mode=enums.ParseMode.HTML,
                     reply_markup=_status_kb(uid),
                 )

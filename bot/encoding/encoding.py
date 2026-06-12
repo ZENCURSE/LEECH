@@ -96,7 +96,11 @@ async def encode(filepath, message, msg, audio_map=None):
     output_filepath = output_filepathh
     subtitles_path = os.path.join(encode_dir, str(msg.id) + '.ass')
 
-    progress = os.path.join(download_dir, "process.txt")
+    # Use a per-message unique progress file to avoid collisions
+    _enc_tmp = os.path.join(download_dir, f"enc_{msg.id}")
+    os.makedirs(_enc_tmp, exist_ok=True)
+    progress = os.path.join(_enc_tmp, "process.txt")
+    status   = os.path.join(_enc_tmp, "status.json")
     with open(progress, 'w') as f:
         pass
 
@@ -369,7 +373,7 @@ async def encode(filepath, message, msg, audio_map=None):
                    watermark.split() + metadata.split() + subtitles.split() + audio_opts.split() + channels.split() + finish.split()))
     proc = await asyncio.create_subprocess_exec(*command, output_filepath, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     # Progress Bar
-    await handle_progress(proc, msg, message, filepath)
+    await handle_progress(proc, msg, message, filepath, progress, status)
     # Wait for the subprocess to finish
     stdout, stderr = await proc.communicate()
     e_response = stderr.decode().strip()
@@ -486,79 +490,90 @@ async def media_info(saved_file_path):
     return total_seconds, bitrate
 
 
-async def handle_progress(proc, msg, message, filepath):
+async def handle_progress(proc, msg, message, filepath,
+                            progress_file: str, status_file: str):
+    """
+    Poll ffmpeg -progress output and update the Telegram message card.
+    Fixes:
+      - Correct file paths (no broken string concat)
+      - MESSAGE_NOT_MODIFIED guard (skip edit when text unchanged)
+      - Clean NXTL-style progress card with bar, %, ETA, speed, elapsed
+    """
+    import config as _cfg
+    SEP = "━━━━━━━━━━━━━━━━━━━━━━━━"
     name = os.path.basename(filepath)
-    # Progress Bar
+    stem = (name[:36] + "…") if len(name) > 38 else name
     COMPRESSION_START_TIME = time.time()
-    LOGGER.info("ffmpeg_process: "+str(proc.pid))
-    status = download_dir + "status.json"
-    with open(status, 'w') as f:
-        statusMsg = {
-            'running': True,
-            'message': msg.id,
-            'user': message.from_user.id
-        }
-        json.dump(statusMsg, f, indent=2)
-    with open(status, 'r+') as f:
-        statusMsg = json.load(f)
-        statusMsg['pid'] = proc.pid
-        statusMsg['message'] = msg.id
-        statusMsg['user'] = message.from_user.id
-        f.seek(0)
-        json.dump(statusMsg, f, indent=2)
-    while proc.returncode == None:
-        await asyncio.sleep(5)
-        with open(download_dir + 'process.txt', 'r+') as file:
-            text = file.read()
-            frame = re.findall(r"frame=(\d+)", text)
-            time_in_us = re.findall(r"out_time_ms=(\d+)", text)
-            progress = re.findall(r"progress=(\w+)", text)
-            speed = re.findall(r"speed=(\d+\.?\d*)", text)
-            if len(frame):
-                frame = int(frame[-1])
-            else:
-                frame = 1
-            if len(speed):
-                speed = speed[-1]
-            else:
-                speed = 1
-            if len(time_in_us):
-                time_in_us = time_in_us[-1]
-            else:
-                time_in_us = 1
-            if len(progress):
-                if progress[-1] == "end":
-                    LOGGER.info(progress[-1])
-                    break
-            breakexecution_time = TimeFormatter(
-                (time.time() - COMPRESSION_START_TIME))
-            elapsed_time = int(time_in_us)/1000000
-            total_time, bitrate = await media_info(filepath)
-            difference = math.floor((total_time - elapsed_time) / float(speed))
-            ETA = "-"
-            if difference > 0:
-                ETA = TimeFormatter(difference)
-            percentage = math.floor(elapsed_time * 100 / total_time)
-            progress_str = "<b>Encoding Video:</b> {0}%\n{1}{2}".format(
-                round(percentage, 2),
-                ''.join(['█' for i in range(
-                    math.floor(percentage / 10))]),
-                ''.join(['░' for i in range(
-                    10 - math.floor(percentage / 10))])
-            )
-            stats = f'{progress_str} \n' \
-                    f'• ETA: {ETA}'
-            try:
-                await msg.edit(
-                    text=stats,
-                    reply_markup=InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton('Cancel', callback_data='cancel'), InlineKeyboardButton(
-                                    'Stats', callback_data='stats')
-                            ]
-                        ]
-                    )
-                )
-            except:
-                pass
+    last_text = ""
+
+    # Write initial status json
+    try:
+        with open(status_file, 'w') as f:
+            json.dump({'running': True, 'pid': proc.pid,
+                       'message': msg.id, 'user': message.from_user.id}, f)
+    except Exception:
+        pass
+
+    total_time, _ = await media_info(filepath)
+    if not total_time or total_time <= 0:
+        total_time = 1
+
+    while proc.returncode is None:
+        await asyncio.sleep(4)
+        try:
+            with open(progress_file, 'r') as file:
+                text = file.read()
+        except Exception:
+            continue
+
+        time_in_us = re.findall(r"out_time_ms=(\d+)", text)
+        speed_list = re.findall(r"speed=(\d+\.?\d*)", text)
+        prog_list  = re.findall(r"progress=(\w+)", text)
+
+        if prog_list and prog_list[-1] == "end":
+            break
+
+        elapsed_enc  = time.time() - COMPRESSION_START_TIME
+        elapsed_media = int(time_in_us[-1]) / 1_000_000 if time_in_us else 0
+        speed_val     = float(speed_list[-1]) if speed_list else 0.0
+
+        pct = min(int(elapsed_media * 100 / total_time), 99)
+        filled = int(pct / 10)
+        bar    = "█" * filled + "░" * (10 - filled)
+
+        if speed_val > 0:
+            remaining = max(total_time - elapsed_media, 0)
+            eta_secs  = int(remaining / speed_val)
+            mm, ss    = divmod(eta_secs, 60)
+            hh, mm    = divmod(mm, 60)
+            eta_str   = f"{hh}h {mm}m {ss}s" if hh else (f"{mm}m {ss}s" if mm else f"{ss}s")
+        else:
+            eta_str = "—"
+
+        em, es = divmod(int(elapsed_enc), 60)
+        eh, em = divmod(em, 60)
+        elapsed_str = f"{eh}h {em}m {es}s" if eh else (f"{em}m {es}s" if em else f"{es}s")
+
+        new_text = (
+            f"<b>{SEP}</b>\n"
+            f"<b>⚙️  ENCODING</b>\n"
+            f"<b>{SEP}</b>\n\n"
+            f"🎬 <b>{stem}</b>\n\n"
+            f"<b><code>{bar}</code>  {pct}%</b>\n\n"
+            f"⚡ <b>Speed:</b> {speed_val:.2f}x\n"
+            f"⏱ <b>Elapsed:</b> {elapsed_str}\n"
+            f"🕐 <b>ETA:</b> {eta_str}\n\n"
+            f"<b>{SEP}</b>\n"
+            f"<b>⚡ {_cfg.WATERMARK}</b>"
+        )
+
+        # Skip edit if text unchanged — avoids MESSAGE_NOT_MODIFIED
+        if new_text == last_text:
+            continue
+        last_text = new_text
+
+        try:
+            await msg.edit_text(new_text, parse_mode="html")
+        except Exception:
+            pass
+

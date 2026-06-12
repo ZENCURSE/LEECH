@@ -21,16 +21,15 @@ def _welcome(user) -> str:
         f"│  🚀  <b>NXT HUB LEECH BOT</b>    │\n"
         f"│  ⚡  Fast · Smart · Free  │\n"
         f"└─────────────────────────┘\n\n"
-        f"<b>What I can do for you:</b>\n"
-        f"  📥  Download from <b>1000+</b> websites\n"
-        f"  📨  Telegram message links\n"
-        f"  🧲  Torrent &amp; Magnet URIs\n"
-        f"  🗜  Zip / Unzip with progress\n"
-        f"  🖼  HD landscape auto-thumbnails\n"
-        f"  🍪  Cookie support for premium sites\n"
-        f"  🏷  Smart rename with variables\n\n"
-        f"<b>Get started:</b>\n"
-        f"  Just paste a link or use /d &lt;url&gt;\n\n"
+        f"<b>What I can do:</b>\n"
+        f"  📥  Download from <b>1000+</b> sites\n"
+        f"  🔗  JDLeech — multi-host direct links\n"
+        f"  🧲  Torrent &amp; Magnet support\n"
+        f"  🎬  FFmpeg encode with custom settings\n"
+        f"  ✂️  Auto-split files up to 4 GB\n"
+        f"  🖼  HD auto-thumbnails (TMDB/Fanart)\n"
+        f"  🏷  Smart rename with token variables\n\n"
+        f"<b>Get started →</b> paste a link or use /d\n\n"
         f"━━━━━ <b>{config.WATERMARK}</b> ━━━━━"
     )
 
@@ -48,66 +47,122 @@ def _welcome_kb() -> InlineKeyboardMarkup:
     ])
 
 
+# ══════════════════════════════════════════════════════════════
+#  HELP TEXT
+# ══════════════════════════════════════════════════════════════
+
 HELP_TEXT = (
-    "<b>📖 NXT HUB — Commands</b>\n\n"
-    "╔═ 📥 <b>DOWNLOAD</b> ════════════╗\n"
-    "  <code>/d &lt;url&gt;</code>        — download &amp; upload\n"
-    "  <code>/d &lt;url&gt; zip</code>    — download → zip\n"
-    "  <code>/d &lt;url&gt; unzip</code>  — download → extract\n"
-    "  Or just <b>paste any link</b>\n"
-    "╚═══════════════════════════╝\n\n"
-    "╔═ ⚙️ <b>SETTINGS</b> ════════════╗\n"
-    "  <code>/settings</code> — open your panel\n\n"
-    "  <b>🏷 Rename variables:</b>\n"
-    "  <code>{name}</code> <code>{size}</code> <code>{duration}</code>\n"
-    "  <code>{language}</code> <code>{quality}</code> <code>{codec}</code>\n"
-    "  <code>{audio}</code> <code>{fps}</code> <code>{date}</code>\n"
-    "╚═══════════════════════════╝\n\n"
-    "╔═ 📊 <b>TASKS</b> ══════════════╗\n"
-    "  <code>/status</code>  — view your tasks\n"
-    "  <code>/cancel &lt;id&gt;</code>  — cancel task\n"
-    "  Or tap <b>Stop → /c1_XXXX</b>\n"
-    "╚═══════════════════════════╝\n\n"
-    "╔═ 🔗 <b>SOURCES</b> ═════════════╗\n"
-    "  • YouTube, Vimeo, Dailymotion\n"
-    "  • StreamTape, DoodStream\n"
-    "  • Hubcloud, GDFlix, Pixeldrain\n"
+    "<b>📖 NXT HUB — Full Command Guide</b>\n\n"
+
+    "╔═ 📥 <b>DOWNLOAD</b> ══════════════════╗\n"
+    "  <code>/d &lt;url&gt;</code>         — leech any URL\n"
+    "  <code>/d &lt;url&gt; zip</code>     — download → zip\n"
+    "  <code>/d &lt;url&gt; unzip</code>   — download → extract\n"
+    "  <code>/jdleech &lt;url&gt;</code>   — multi-host direct links\n"
+    "  Or just <b>paste any link</b> directly\n\n"
+    "  <b>Supported sources:</b>\n"
+    "  • YouTube, Vimeo, Dailymotion, Twitch\n"
+    "  • MediaFire, PixelDrain, BuzzHeavier\n"
+    "  • GoFile, TeraBox, 1Fichier, KrakenFiles\n"
+    "  • WeTransfer, OneDrive, Yandex Disk\n"
+    "  • Streamtape, DoodStream, FileLions\n"
+    "  • Mega.nz (anonymous + account)\n"
+    "  • Torrent files &amp; Magnet URIs\n"
     "  • Telegram message links\n"
-    "  • Torrent &amp; Magnet URIs\n"
     "  • 1000+ sites via yt-dlp\n"
-    "╚═══════════════════════════╝\n\n"
-    "╔═ 👑 <b>ADMIN</b> ═══════════════╗\n"
-    "  <code>/addowner</code> <code>/removeowner</code>\n"
-    "  <code>/addadmin</code> <code>/removeadmin</code>\n"
+    "╚══════════════════════════════════╝\n\n"
+
+    "╔═ 🎬 <b>ENCODING</b> ══════════════════╗\n"
+    "  <code>/encode</code>       — reply to a video to encode\n"
+    "  <code>/encurl &lt;url&gt;</code> — download + encode URL\n"
+    "  <code>/encset</code>       — open encode settings panel\n"
+    "  <code>/vset</code>         — view current encode settings\n\n"
+    "  <b>Configurable via /encset:</b>\n"
+    "  • Codec: H.264 / H.265\n"
+    "  • CRF quality · Preset · Resolution\n"
+    "  • FPS · Audio codec · Bitrate\n"
+    "  • Hardsub · Softsub · Watermark\n"
+    "╚══════════════════════════════════╝\n\n"
+
+    "╔═ ⚙️ <b>SETTINGS</b> ═══════════════════╗\n"
+    "  <code>/settings</code> — open your personal panel\n\n"
+    "  <b>📥 Download</b>\n"
+    "    🍪 Cookies.txt for yt-dlp premium access\n\n"
+    "  <b>📤 Upload</b>\n"
+    "    🖼 Custom thumbnail (photo or file)\n"
+    "    📄 Upload mode: Media / Document\n"
+    "    📢 Dump channel forwarding\n\n"
+    "  <b>🎬 Encoding</b>\n"
+    "    Full FFmpeg settings panel\n\n"
+    "  <b>🏷 Rename</b>\n"
+    "    Prefix · Suffix · Regex · Caption\n\n"
+    "  <b>Caption/rename tokens:</b>\n"
+    "  <code>{name}</code> <code>{size}</code> <code>{quality}</code> "
+    "<code>{language}</code>\n"
+    "  <code>{codec}</code> <code>{audio}</code> <code>{fps}</code> "
+    "<code>{date}</code>\n"
+    "╚══════════════════════════════════╝\n\n"
+
+    "╔═ 📊 <b>TASKS</b> ══════════════════════╗\n"
+    "  <code>/status</code>         — view active tasks\n"
+    "  <code>/cancel &lt;id&gt;</code>   — cancel a task\n"
+    "  Or tap ❌ Cancel on the task card\n"
+    "╚══════════════════════════════════╝\n\n"
+
+    "╔═ 👑 <b>ADMIN</b> ═══════════════════════╗\n"
+    "  <code>/addowner</code>    <code>/removeowner</code>\n"
+    "  <code>/addadmin</code>    <code>/removeadmin</code>\n"
     "  <code>/listusers</code>\n"
-    "╚═══════════════════════════╝\n\n"
+    "╚══════════════════════════════════╝\n\n"
+
     f"━━━━━ <b>{config.WATERMARK}</b> ━━━━━"
 )
+
+
+# ══════════════════════════════════════════════════════════════
+#  ABOUT TEXT
+# ══════════════════════════════════════════════════════════════
 
 ABOUT_TEXT = (
     "┌─────────────────────────┐\n"
     "│  🤖  <b>NXT HUB LEECH BOT</b>    │\n"
-    "│       Version  <code>4.0.0</code>       │\n"
+    "│       Version  <code>5.0.0</code>       │\n"
     "└─────────────────────────┘\n\n"
+
     "<b>⚙️ Powered by:</b>\n"
-    "  • Pyrogram  —  Telegram MTProto\n"
-    "  • yt-dlp    —  1000+ site support\n"
-    "  • aria2     —  Torrent engine\n"
-    "  • TMDB / Fanart  —  HD thumbnails\n"
-    "  • FFmpeg    —  Media processing\n"
-    "  • MongoDB   —  User data storage\n\n"
+    "  • <b>Pyrogram</b>   — Telegram MTProto client\n"
+    "  • <b>yt-dlp</b>     — 1000+ site downloader\n"
+    "  • <b>aria2</b>      — Torrent / magnet engine\n"
+    "  • <b>FFmpeg</b>     — Encoding &amp; media processing\n"
+    "  • <b>mega.py</b>    — Mega.nz downloads\n"
+    "  • <b>TMDB / Fanart</b> — HD auto-thumbnails\n"
+    "  • <b>MongoDB</b>    — User data &amp; settings\n\n"
+
     "<b>✨ Features:</b>\n"
-    "  📥  Multi-source downloader\n"
-    "  📨  Telegram link support\n"
-    "  🖼  HD landscape auto-thumb\n"
-    "  🏷  Dynamic rename variables\n"
-    "  🗜  Zip/unzip with progress\n"
-    "  ✂️  Auto file splitting (4 GB)\n"
-    "  🔒  Per-user auth &amp; settings\n"
-    "  🗄  MongoDB persistent storage\n\n"
+    "  📥  Multi-source downloader (1000+ sites)\n"
+    "  🔗  JDLeech — 30+ direct link hosters\n"
+    "  🧲  Torrent &amp; magnet support via aria2\n"
+    "  🌐  Mega.nz anonymous &amp; account login\n"
+    "  🎬  FFmpeg encoding — H.264/H.265, CRF,\n"
+    "       preset, resolution, audio, subs,\n"
+    "       watermark overlay\n"
+    "  ✂️  Auto file splitting up to 4 GB\n"
+    "       (4 GB with Premium session)\n"
+    "  🖼  HD landscape thumbnails — TMDB,\n"
+    "       Fanart.tv, iTunes, auto-frame extract\n"
+    "  🏷  Dynamic rename with token variables\n"
+    "  🗜  Zip / unzip with live progress\n"
+    "  📢  Dump channel forwarding\n"
+    "  🔒  Per-user auth, settings &amp; cookies\n"
+    "  🗄  MongoDB persistent user storage\n\n"
+
     f"━━━━━ <b>{config.WATERMARK}</b> ━━━━━"
 )
 
+
+# ══════════════════════════════════════════════════════════════
+#  Keyboard helpers
+# ══════════════════════════════════════════════════════════════
 
 def _help_kb():
     return InlineKeyboardMarkup([[
@@ -117,12 +172,13 @@ def _help_kb():
 
 def _about_kb():
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🏠 Home",  callback_data="nav_start"),
-        InlineKeyboardButton("📖 Help",  callback_data="nav_help"),
+        InlineKeyboardButton("🏠 Home", callback_data="nav_start"),
+        InlineKeyboardButton("📖 Help", callback_data="nav_help"),
     ]])
 
 
-# ── "Start the bot first" prompt — shown in group when user hasn't PM'd ──
+# ── "Start the bot first" prompt in groups ────────────────────
+
 async def send_start_prompt(client, message: Message):
     bot_info = await client.get_me()
     user     = message.from_user
@@ -133,8 +189,7 @@ async def send_start_prompt(client, message: Message):
         f"└──────────────────────┘\n\n"
         f"Start the bot in PM <b>once</b> so I can\n"
         f"send files directly to you.\n\n"
-        f"<b>After that, just paste links here</b>\n"
-        f"and I'll handle everything! 🚀",
+        f"<b>After that, just paste links here!</b> 🚀",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton(
                 "▶️  Start Bot Now",
@@ -145,7 +200,9 @@ async def send_start_prompt(client, message: Message):
     )
 
 
-# ── Handlers ──────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════
+#  Command handlers
+# ══════════════════════════════════════════════════════════════
 
 @Client.on_message(filters.command("start") & filters.private)
 async def cmd_start(client: Client, message: Message):
@@ -181,7 +238,9 @@ async def cmd_about(client: Client, message: Message):
     )
 
 
-# ── Nav callbacks ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════
+#  Navigation callbacks (inline buttons)
+# ══════════════════════════════════════════════════════════════
 
 @Client.on_callback_query(filters.regex(r"^nav_"))
 async def nav_cb(client, cb):
@@ -204,9 +263,9 @@ async def nav_cb(client, cb):
             parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True,
         )
     elif action == "settings":
-        from bot.handlers.settings import _settings_text, _settings_kb
+        from bot.handlers.settings import _main_text, _main_settings_kb
         await cb.message.edit_text(
-            _settings_text(uid), reply_markup=_settings_kb(uid),
+            _main_text(uid), reply_markup=_main_settings_kb(),
             parse_mode=enums.ParseMode.HTML,
         )
     elif action == "status":
