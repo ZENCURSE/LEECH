@@ -216,65 +216,62 @@ async def encode(filepath, message, msg, audio_map=None):
     else:
         metadata = ''
 
-    # Copy Subtitles
-    h = await db.get_hardsub(message.from_user.id)
-    s = await db.get_subtitles(message.from_user.id)
+
+    # ── Subtitle handling ─────────────────────────────────────────
+    # Hardsub  = burn subtitle into video via -vf subtitles= (visible always)
+    # Softsub  = copy subtitle stream alongside video (user can toggle in player)
+    # Both can be active simultaneously — hardsub burns a copy, softsub keeps stream
+    h      = await db.get_hardsub(message.from_user.id)
+    s      = await db.get_subtitles(message.from_user.id)
     subs_i = get_codec(filepath, channel='s:0')
-    if subs_i == []:
+    has_subs = subs_i not in ([], None, 'pgs')   # pgs = bitmap subs, can't burn
+
+    # Softsub stream copy (independent of hardsub)
+    if s and has_subs:
+        if ex == 'MP4':
+            subtitles = '-c:s mov_text -c:t copy -map 0:t? -map 0:s?'
+        elif ex == 'AVI':
+            subtitles = ''   # AVI has no subtitle container support
+        else:
+            subtitles = '-c:s copy -c:t copy -map 0:t? -map 0:s?'
+    else:
         subtitles = ''
-    else:
-        if s:
-            if h:
-                subtitles = ''
-            else:
-                if ex == 'MP4':
-                    subtitles = '-c:s mov_text -c:t copy -map 0:t? -map 0:s?'
-                elif ex == 'AVI':
-                    subtitles = ''
-                else:
-                    subtitles = '-c:s copy -c:t copy -map 0:t? -map 0:s?'
-        else:
-            subtitles = ''
 
+    # ── -vf filter chain: scale → watermark → hardsub ─────────
+    # Built as a list then joined with commas — clean, no broken string concat
+    vf_filters = []
 
-#    ffmpeg_filter = ':'.join([
-#        'drawtext=fontfile=/app/bot/utils/watermark/font.ttf',
-#        f"text='Cantarellabots'",
-#        f'fontcolor=white',
-#        'fontsize=main_h/20',
-#        f'x=40:y=40'
-#    ])
-
-    # Watermark and Resolution
     r = await db.get_resolution(message.from_user.id)
-    w = await db.get_watermark(message.from_user.id)
-    if r == 'OG':
-        watermark = ''
-    elif r == '1080':
-        watermark = '-vf scale=1920:1080'
+    if r == '1080':
+        vf_filters.append('scale=1920:1080')
     elif r == '720':
-        watermark = '-vf scale=1280:720'
+        vf_filters.append('scale=1280:720')
     elif r == '576':
-        watermark = '-vf scale=768:576'
-    else:
-        watermark = '-vf scale=852:480'
-    if w:
-        if r == 'OG':
-            watermark += '-vf '
-        else:
-            watermark += ','
-        watermark += 'subtitles=VideoEncoder/utils/extras/watermark.ass'
+        vf_filters.append('scale=768:576')
+    elif r == '480':
+        vf_filters.append('scale=852:480')
+    # OG = source resolution, no scale filter
 
-    # Hard Subs
-    if h:
-        if r == 'OG':
-            if w:
-                watermark += ','
-            else:
-                watermark += '-vf '
+    w = await db.get_watermark(message.from_user.id)
+    wm_ass = 'bot/encoding/extras/watermark.ass'
+    if w and os.path.isfile(wm_ass):
+        vf_filters.append(f'subtitles={wm_ass}')
+
+    # Hardsub — burn subtitle track into video frames
+    # Requires: extracted .ass file from extract_subs(), or falls back to stream index
+    if h and has_subs:
+        if subtitles_path and os.path.isfile(subtitles_path):
+            # Use extracted .ass — includes custom fonts/styles
+            vf_filters.append(
+                f"subtitles='{subtitles_path}'"
+            )
         else:
-            watermark += ','
-        watermark += f'subtitles={subtitles_path}'
+            # Fallback: burn directly from embedded stream (index 0:s:0)
+            safe_path = filepath.replace("'", "\\'").replace(":", "\\:")
+            vf_filters.append(f"subtitles='{safe_path}':si=0")
+
+    watermark = ('-vf ' + ','.join(vf_filters)) if vf_filters else ''
+
 
     # Sample rate
     sr = await db.get_samplerate(message.from_user.id)
