@@ -198,12 +198,27 @@ async def cmd_leech(client: Client, message: Message):
 )
 async def reply_to_media(client: Client, message: Message):
     """
-    When user sends any message as a reply to a Telegram media file,
-    automatically start downloading it — no command needed.
-    Triggers only when the reply target has downloadable media.
+    Download a Telegram media file when user replies to it.
+    Only triggers when the reply text is EMPTY or is exactly a
+    known trigger word — never on normal conversation replies.
+    This prevents the bot from responding to every message in a chat.
     """
-    if not message.text and not message.caption:
-        return
+    # Only trigger if:
+    # 1. Reply text is empty (bare reply to media = download intent)
+    # 2. Or reply text is exactly a trigger word
+    TRIGGER_WORDS = {"dl", "download", "leech", "d", "get", "save"}
+    text = (message.text or message.caption or "").strip().lower()
+
+    if text:
+        # Has text — only proceed if it's a recognised trigger word
+        # Ignore: normal conversation, questions, URLs (handled by /d), commands
+        if text not in TRIGGER_WORDS:
+            return
+        if text.startswith("/"):
+            return
+        if re.match(r"https?://\S+", text):
+            return
+
     if not await auth_required(message):
         return
     if await _ensure_started(client, message):
@@ -213,21 +228,12 @@ async def reply_to_media(client: Client, message: Message):
     if not replied:
         return
 
-    # Only trigger if replied message has media
+    # Only trigger if replied message has downloadable media
     media = (replied.video or replied.document or replied.audio or
-             replied.photo or replied.animation or replied.voice or
-             replied.video_note)
+             replied.animation or replied.voice or replied.video_note)
     if not media:
         return
 
-    # Ignore if the reply text looks like a command or URL (handled elsewhere)
-    text = (message.text or message.caption or "").strip()
-    if text.startswith("/"):
-        return
-    if re.match(r"https?://\S+", text):
-        return
-
-    # Treat as a download request
     await _start_tg_reply(client, message, replied, "")
 
 
@@ -270,8 +276,35 @@ async def _run_tg_reply(client: Client, message: Message, replied, action: str,
     fname = getattr(media, "file_name", None)
     if not fname:
         import mimetypes
-        mime  = getattr(media, "mime_type", "") or ""
-        ext   = mimetypes.guess_extension(mime.split(";")[0].strip()) or ".bin"
+        mime = getattr(media, "mime_type", "") or ""
+        # mimetypes.guess_extension is unreliable — use manual map first
+        _mime_map = {
+            "video/mp4": ".mp4", "video/x-matroska": ".mkv",
+            "video/x-msvideo": ".avi", "video/quicktime": ".mov",
+            "video/x-ms-wmv": ".wmv", "video/webm": ".webm",
+            "video/mpeg": ".mpeg", "video/3gpp": ".3gp",
+            "audio/mpeg": ".mp3", "audio/mp4": ".m4a",
+            "audio/ogg": ".ogg", "audio/flac": ".flac",
+            "audio/x-wav": ".wav", "audio/aac": ".aac",
+            "image/jpeg": ".jpg", "image/png": ".png",
+            "image/gif": ".gif", "image/webp": ".webp",
+            "application/pdf": ".pdf",
+            "application/zip": ".zip",
+            "application/x-rar-compressed": ".rar",
+            "application/x-7z-compressed": ".7z",
+        }
+        base_mime = mime.split(";")[0].strip()
+        ext = _mime_map.get(base_mime) or mimetypes.guess_extension(base_mime) or ""
+        # Never use .bin — fallback by media type
+        if not ext or ext == ".bin" or ext == ".ksh":
+            if message.video or (message.document and "video" in mime):
+                ext = ".mp4"
+            elif message.audio:
+                ext = ".mp3"
+            elif message.photo:
+                ext = ".jpg"
+            else:
+                ext = ".bin"
         fname = f"tg_{tid}{ext}"
     dest = os.path.join(dest_dir, fname)
 

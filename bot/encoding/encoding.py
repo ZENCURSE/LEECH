@@ -289,15 +289,14 @@ async def encode(filepath, message, msg, audio_map=None, external_sub=None):
         vf_filters.append(f'subtitles={wm_ass}')
 
     # Hardsub — burn subtitle track into video frames
-    # Requires: extracted .ass file from extract_subs(), or falls back to stream index
-    if h and has_subs:
+    # _force_hardsub = external sub provided, always burn regardless of has_subs
+    if h and (_force_hardsub or has_subs):
         if subtitles_path and os.path.isfile(subtitles_path):
-            # Use extracted .ass — includes custom fonts/styles
-            vf_filters.append(
-                f"subtitles='{subtitles_path}'"
-            )
-        else:
-            # Fallback: burn directly from embedded stream (index 0:s:0)
+            # Use extracted/external .ass — includes custom fonts/styles
+            safe = subtitles_path.replace("'", "\\'").replace(":", "\\:")
+            vf_filters.append(f"subtitles='{safe}'")
+        elif has_subs:
+            # Fallback: burn directly from embedded stream
             safe_path = filepath.replace("'", "\\'").replace(":", "\\:")
             vf_filters.append(f"subtitles='{safe_path}':si=0")
 
