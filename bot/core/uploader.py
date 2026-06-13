@@ -15,7 +15,7 @@ from pyrogram.errors import FloodWait, BadRequest, RPCError
 from bot.core import task_manager as tm
 from bot.utils.progress import done_card, task_kb
 from bot.utils.size_utils import human_size
-from bot.utils.thumbnail import get_thumbnail
+from bot.utils.thumbnail import get_thumbnail, generate_title_card
 from bot.utils.rename import smart_rename, parse_title_year
 from bot.utils.token_resolver import (
     resolve_tokens, _ffprobe,
@@ -76,34 +76,41 @@ async def _resolve_thumb(uid, name, tmp_dir, title: str = ""):
 
     Priority:
       1. User-set custom thumb (thumb_path in settings)
-      2. Auto-fetched from TMDB/Fanart via title lookup
+      2. Auto: Fanart moviethumb (has logo baked in) → TMDB backdrop+overlay
+               → iTunes poster+landscape → generate_title_card (guaranteed)
 
-    Both paths are processed through _hq_resize_thumb (1280×720, JPEG q=95,
-    subsampling=0) before being returned. This prevents Telegram from
-    recompressing a low-quality or oversized image on its end — the server
-    only recompresses if the file it receives is already poor quality or
-    wrong dimensions.
+    Every path goes through _prep_thumb() before send_video/send_document.
+    generate_title_card() is the final fallback — it ALWAYS produces an image
+    with the movie title visible, so uploads never have a missing thumbnail.
     """
     try:
         s = users_db.get_settings(uid)
 
         if s.get("thumb_path") and os.path.exists(s["thumb_path"]):
-            src    = s["thumb_path"]
+            src     = s["thumb_path"]
             resized = os.path.join(tmp_dir, f"thumb_hq_{uid}.jpg")
             return _hq_resize_thumb(src, resized, max_w=1280, max_h=720)
 
         from bot.utils.rename import parse_title_year
         t, year = parse_title_year(name)
         lookup_title = t or title or name
-        if lookup_title:
-            dest = os.path.join(tmp_dir, f"auto_thumb_{uid}.jpg")
-            from bot.utils.thumbnail import get_thumbnail
-            if await get_thumbnail(lookup_title, year, dest, title=lookup_title):
-                # thumbnail.py already saves at q=95 but may be >1280px wide
-                resized = os.path.join(tmp_dir, f"auto_thumb_hq_{uid}.jpg")
-                return _hq_resize_thumb(dest, resized, max_w=1280, max_h=720)
+        if not lookup_title:
+            return None
+
+        dest = os.path.join(tmp_dir, f"auto_thumb_{uid}.jpg")
+        from bot.utils.thumbnail import get_thumbnail, generate_title_card
+
+        # get_thumbnail tries Fanart → TMDB → iTunes → generate_title_card
+        # It ALWAYS returns True (generate_title_card is guaranteed fallback)
+        await get_thumbnail(lookup_title, year, dest, title_overlay=lookup_title)
+
+        if os.path.isfile(dest):
+            return _hq_resize_thumb(dest, os.path.join(tmp_dir, f"auto_thumb_hq_{uid}.jpg"),
+                                    max_w=1280, max_h=720)
+
     except Exception:
         pass
+
     return None
 
 
