@@ -198,10 +198,74 @@ async def _build_token_block(prefix_tpl: str, suffix_tpl: str, file_path: str) -
     return "\n".join(lines)
 
 
+# ── Thumbnail helpers ─────────────────────────────────────────
+
+async def _get_thumb_dims(thumb_path: str) -> tuple[int, int]:
+    """
+    Get actual pixel dimensions of a thumbnail file.
+    Returns (width, height). Falls back to (1280, 720) if unreadable.
+    Passing correct dims to send_video/send_document ensures Telegram
+    displays the full-resolution thumbnail instead of resampling it.
+    """
+    if not thumb_path or not os.path.isfile(thumb_path):
+        return 1280, 720
+    try:
+        from PIL import Image
+        with Image.open(thumb_path) as img:
+            return img.size  # (width, height)
+    except Exception:
+        pass
+    # Fallback: ffprobe
+    try:
+        import subprocess, json
+        out = subprocess.check_output([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "json", thumb_path
+        ], timeout=5).decode()
+        s = json.loads(out)["streams"][0]
+        return int(s["width"]), int(s["height"])
+    except Exception:
+        return 1280, 720
+
+
+def _prep_thumb(thumb_path: str) -> str | None:
+    """
+    Ensure thumbnail is:
+    - JPEG format
+    - Quality 95, subsampling=0 (4:4:4 chroma — no colour smearing)
+    - Max 1280x720 (never upscale)
+    Returns path to processed thumb, or None.
+    Telegram MTProto (pyrofork) accepts larger than 320px — the 320px
+    limit only applies to the HTTP Bot API. Via MTProto, Telegram stores
+    and serves the full image as-is.
+    """
+    if not thumb_path or not os.path.isfile(thumb_path):
+        return None
+    try:
+        from PIL import Image
+        with Image.open(thumb_path) as img:
+            rgb = img.convert("RGB")
+            w, h = rgb.size
+            # Cap at 1280x720 keeping aspect, never upscale
+            scale = min(1280 / w, 720 / h, 1.0)
+            if scale < 1.0:
+                rgb = rgb.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            # Save to temp file alongside original
+            out = thumb_path.rsplit(".", 1)[0] + "_hd.jpg"
+            rgb.save(out, "JPEG", quality=95, subsampling=0, optimize=True)
+            return out
+    except Exception:
+        return thumb_path
+
+
 # ── Send helpers ──────────────────────────────────────────────
+
 async def _send_doc(client, chat_id, path, caption, thumb, cb):
+    hd_thumb = _prep_thumb(thumb)
+    tw, th = await _get_thumb_dims(hd_thumb) if hd_thumb else (None, None)
     return await client.send_document(
-        chat_id=chat_id, document=path, thumb=thumb,
+        chat_id=chat_id, document=path, thumb=hd_thumb,
         caption=caption, parse_mode=enums.ParseMode.HTML,
         disable_notification=True, progress=cb,
     )
@@ -217,30 +281,47 @@ async def _send(client, chat_id, path, caption, thumb, cb, as_doc):
 
     if is_video:
         duration, _, _ = await get_media_info(path)
-        if not thumb: thumb = await get_video_thumbnail(path, duration)
+        if not thumb:
+            thumb = await get_video_thumbnail(path, duration)
+        hd_thumb = _prep_thumb(thumb)
+        tw, th    = await _get_thumb_dims(hd_thumb) if hd_thumb else (1280, 720)
+        # Also read actual video dimensions to pass correct w/h
+        try:
+            import subprocess, json as _json
+            _out = subprocess.check_output([
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=width,height",
+                "-of", "json", path
+            ], timeout=5).decode()
+            _s = _json.loads(_out)["streams"][0]
+            vw, vh = int(_s["width"]), int(_s["height"])
+        except Exception:
+            vw, vh = tw, th
         try:
             return await client.send_video(
                 chat_id=chat_id, video=path, caption=caption,
                 parse_mode=enums.ParseMode.HTML, duration=duration or 0,
-                thumb=thumb, supports_streaming=True,
+                width=vw, height=vh,
+                thumb=hd_thumb, supports_streaming=True,
                 disable_notification=True, progress=cb,
             )
         except (BadRequest, RPCError):
-            return await _send_doc(client, chat_id, path, caption, thumb, cb)
+            return await _send_doc(client, chat_id, path, caption, hd_thumb, cb)
 
     if is_audio:
         duration, artist, title = await get_media_info(path)
         if not thumb: thumb = await get_audio_thumbnail(path)
+        hd_thumb = _prep_thumb(thumb)
         try:
             return await client.send_audio(
                 chat_id=chat_id, audio=path, caption=caption,
                 parse_mode=enums.ParseMode.HTML, duration=duration or 0,
                 performer=artist or "",
                 title=title or os.path.splitext(os.path.basename(path))[0],
-                thumb=thumb, disable_notification=True, progress=cb,
+                thumb=hd_thumb, disable_notification=True, progress=cb,
             )
         except (BadRequest, RPCError):
-            return await _send_doc(client, chat_id, path, caption, thumb, cb)
+            return await _send_doc(client, chat_id, path, caption, hd_thumb, cb)
 
     if is_image:
         try:
