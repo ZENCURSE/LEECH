@@ -69,10 +69,13 @@ def _best_font(paths: list, size: int):
 def _is_good_image(path: str) -> bool:
     """
     Returns True if the image is worth using as a thumbnail.
-    Rejects:
-      - Blank / near-solid colour images
-      - Extremely dark images (average brightness < 15)
-      - Images that are mostly one colour (std dev < 20 across channels)
+    Rejects only truly broken images:
+      - Near-solid colour (std < 8) — blank/error images
+      - Completely black (brightness < 5)
+      - Completely white/blown out (brightness > 245)
+    Dark cinematic images (like RRR, Dark Knight) have std > 15 so they pass.
+    We intentionally use loose thresholds — better to show a dark real image
+    than a generated title card.
     """
     try:
         import numpy as np
@@ -80,44 +83,36 @@ def _is_good_image(path: str) -> bool:
         img = Image.open(path).convert("RGB").resize((160, 90), Image.LANCZOS)
         arr = np.array(img, dtype=np.float32)
 
-        # Reject if too dark
         brightness = arr.mean()
-        if brightness < 15:
-            return False
+        std        = arr.std()
 
-        # Reject if near-solid colour (low variance = boring/broken image)
-        std = arr.std()
-        if std < 18:
-            return False
+        # Reject only completely black/white/broken
+        if brightness < 5:   return False   # completely black
+        if brightness > 245: return False   # completely white/blown out
+        if std < 8:          return False   # near-solid colour = broken image
 
         return True
     except Exception:
-        return True  # Can't check — assume OK
+        return True
 
 
 def _has_text_region(path: str) -> bool:
     """
-    Rough check: does the bottom 20% of the image have high-contrast content
-    (typical of title text overlays)? Not OCR — just contrast heuristic.
-    Fanart moviethumb always passes this. Plain backdrops may or may not.
+    Detects title text/logo in bottom 30% of image using edge bright-pixel count.
+    text creates sharp edges — count > 3000 bright pixels confirms text present.
     """
     try:
         import numpy as np
         from PIL import Image, ImageFilter
-        img = Image.open(path).convert("L").resize((320, 180), Image.LANCZOS)
-        # Crop bottom 20%
-        h = img.height
-        bottom = img.crop((0, int(h * 0.75), img.width, h))
-        arr = np.array(bottom, dtype=np.float32)
-        # Edges via simple gradient
-        edge = bottom.filter(ImageFilter.FIND_EDGES)
-        edge_arr = np.array(edge, dtype=np.float32)
-        return edge_arr.mean() > 12   # text edges are sharp
+        img    = Image.open(path).convert("L").resize((320, 180), Image.LANCZOS)
+        W, H   = img.size
+        bottom = img.crop((0, int(H * 0.70), W, H))
+        edge   = bottom.filter(ImageFilter.FIND_EDGES)
+        arr    = np.array(edge, dtype=np.float32)
+        return int((arr > 30).sum()) > 3000
     except Exception:
         return True
 
-
-# ── HTTP helpers ──────────────────────────────────────────────
 
 async def _get(session, url, params=None):
     try:
