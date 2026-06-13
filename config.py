@@ -61,5 +61,5 @@ WATERMARK_FILE  = "bot/encoding/extras/watermark.ass"  # ASS watermark overlay
 # automatically forward every leeched file to the channel.
 # The bot must be an admin with "Post Messages" permission there.
 # Leave 0 to disable the dump channel feature.
-DUMP_CHANNEL     = 0             # e.g. -1001234567890
+DUMP_CHANNEL     = -1004429190957             # e.g. -1001234567890
 DUMP_CHANNEL_TAG = True          # Whether to tag the uploader's username in dump
