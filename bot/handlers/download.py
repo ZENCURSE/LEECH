@@ -6,7 +6,7 @@ import shutil
 import traceback
 
 from pyrogram import Client, filters, enums
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 import config
 from bot.core import task_manager as tm
@@ -803,6 +803,111 @@ def _cleanup(path):
             shutil.rmtree(path, ignore_errors=True)
     except Exception:
         pass
+
+
+# ── Callbacks: torrent file selector ─────────────────────────
+
+@Client.on_callback_query(filters.regex(r"^tf_toggle:"))
+async def tf_toggle(client, cb: CallbackQuery):
+    _, gid, idx_s = cb.data.split(":", 2)
+    idx = int(idx_s)
+    if gid not in _pending:
+        return await cb.answer("Session expired. Send the link again.", show_alert=True)
+    if cb.from_user.id != _pending[gid]["uid"]:
+        return await cb.answer("Not your task.", show_alert=True)
+    sel = _selection.setdefault(gid, set())
+    if idx in sel:
+        sel.discard(idx)
+    else:
+        sel.add(idx)
+    try:
+        files = await torrent_get_files(gid)
+        await cb.message.edit_reply_markup(reply_markup=_build_file_kb(gid, files))
+    except Exception:
+        pass
+    await cb.answer()
+
+
+@Client.on_callback_query(filters.regex(r"^tf_all:"))
+async def tf_all(client, cb: CallbackQuery):
+    _, gid = cb.data.split(":", 1)
+    if gid not in _pending:
+        return await cb.answer("Session expired.", show_alert=True)
+    if cb.from_user.id != _pending[gid]["uid"]:
+        return await cb.answer("Not your task.", show_alert=True)
+    files = await torrent_get_files(gid)
+    _selection[gid] = set(f["index"] for f in files)
+    try:
+        await cb.message.edit_reply_markup(reply_markup=_build_file_kb(gid, files))
+    except Exception:
+        pass
+    await cb.answer("✅ All selected")
+
+
+@Client.on_callback_query(filters.regex(r"^tf_none:"))
+async def tf_none(client, cb: CallbackQuery):
+    _, gid = cb.data.split(":", 1)
+    if gid not in _pending:
+        return await cb.answer("Session expired.", show_alert=True)
+    if cb.from_user.id != _pending[gid]["uid"]:
+        return await cb.answer("Not your task.", show_alert=True)
+    files = await torrent_get_files(gid)
+    _selection[gid] = set()
+    try:
+        await cb.message.edit_reply_markup(reply_markup=_build_file_kb(gid, files))
+    except Exception:
+        pass
+    await cb.answer("☐ All deselected")
+
+
+@Client.on_callback_query(filters.regex(r"^tf_start:"))
+async def tf_start(client, cb: CallbackQuery):
+    _, gid = cb.data.split(":", 1)
+    if gid not in _pending:
+        return await cb.answer("Session expired. Send the link again.", show_alert=True)
+    if cb.from_user.id != _pending[gid]["uid"]:
+        return await cb.answer("Not your task.", show_alert=True)
+
+    sel = _selection.get(gid, set())
+    if not sel:
+        return await cb.answer("⚠️ Select at least one file first.", show_alert=True)
+
+    await cb.answer("⬇️ Starting download…")
+    p     = _pending.pop(gid)
+    _selection.pop(gid, None)
+
+    # Apply file selection to aria2
+    try:
+        await torrent_set_selected(gid, list(sel))
+        await torrent_resume(gid)
+    except Exception as e:
+        try:
+            await cb.message.edit_text(
+                f"❌ <b>Error starting:</b> <code>{e}</code>",
+                parse_mode=enums.ParseMode.HTML,
+            )
+        except Exception:
+            pass
+        return
+
+    # Continue with actual download
+    try:
+        paths = await torrent_download(
+            p["src"], p["dest_dir"], p["tid"], p["msg"],
+            p["is_magnet"], existing_gid=gid,
+        )
+        await _finish_torrent(
+            client, p["message"], p["msg"], paths,
+            p["dest_dir"], p["tid"], p["uid"],
+            p["action"], p["start"], p["is_group"],
+        )
+    except asyncio.CancelledError:
+        await _cancel_msg(p["msg"], p["tid"])
+    except Exception as e:
+        await _error_msg(p["msg"], p["tid"], e)
+    finally:
+        tm.finish_task(p["tid"])
+        _cleanup(p["dest_dir"])
 
 
 # ── Callback: group card refresh ──────────────────────────────

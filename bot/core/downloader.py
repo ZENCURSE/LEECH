@@ -115,142 +115,155 @@ async def http_download(url: str, dest_dir: str, task_id: str, msg) -> str:
 #  yt-dlp  (Fixed: YouTube + M3U8 + impersonation)
 # ─────────────────────────────────────────────
 async def ytdlp_download(url: str, dest_dir: str, task_id: str, msg, uid: int = 0) -> str:
+    """
+    Download via yt-dlp. Handles YouTube, M3U8, and 1000+ sites.
+    Progress updates task_manager every UPDATE_SEC seconds.
+    Error handling: cancelled → CancelledError, yt-dlp error → RuntimeError.
+    """
+    import yt_dlp
+    from yt_dlp.networking.impersonate import ImpersonateTarget
+
     os.makedirs(dest_dir, exist_ok=True)
-    kb        = task_kb(task_id)
-    loop      = asyncio.get_running_loop()
-    last_edit = [0.0]
-    out_path  = [None]
-    cur_name  = ["Fetching info..."]
-    err_ref   = [None]
+    kb       = task_kb(task_id)
+    loop     = asyncio.get_running_loop()
+    out_path = [None]
+    err_ref  = [None]
+    last_upd = [0.0]
+
+    # Sanitised output template — removes invalid chars from title
+    outtmpl  = os.path.join(dest_dir, "%(title).200B.%(ext)s")
 
     def _hook(d: dict):
         if tm.is_cancelled(task_id):
-            raise Exception("Cancelled")
+            raise yt_dlp.utils.DownloadCancelled()
 
-        if d["status"] == "finished":
-            out_path[0] = d.get("filename")
+        status = d.get("status", "")
 
-        elif d["status"] == "downloading":
+        if status == "finished":
+            # yt-dlp calls hook with "finished" before post-processing
+            # The real output path may change (e.g. mp4 merge), capture it here
+            out_path[0] = d.get("filename") or out_path[0]
+
+        elif status == "downloading":
             done  = d.get("downloaded_bytes") or 0
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
             speed = d.get("speed") or 0.0
             eta   = d.get("eta") or 0.0
-            fname = os.path.basename(d.get("filename") or "") or cur_name[0]
-            cur_name[0] = fname
+            fname = os.path.basename(d.get("filename") or "") or "Downloading…"
 
             tm.update_progress(task_id, name=fname, done=done, total=total,
                                speed=speed, eta=eta, status="downloading")
 
             now = time.monotonic()
-            if now - last_edit[0] >= UPDATE_SEC:
-                last_edit[0] = now
+            if now - last_upd[0] >= UPDATE_SEC:
+                last_upd[0] = now
                 asyncio.run_coroutine_threadsafe(
-                    _safe_edit(msg, downloading_card(fname, done, total, speed, eta, task_id), kb),
+                    _safe_edit(msg,
+                        downloading_card(fname, done, total, speed, eta, task_id), kb),
                     loop,
                 )
 
-    outtmpl = os.path.join(dest_dir, "%(title,fulltitle,alt_title)s %(height)sp.%(ext)s")
+    is_m3u8 = ".m3u8" in url.lower() or "m3u8" in url.lower()
 
-    # Base options — ported from WZML-X with YouTube bot bypass
-    opts = {
-        "outtmpl":              {"default": outtmpl},
-        "format": (
+    opts: dict = {
+        "outtmpl":           {"default": outtmpl},
+        "format":            (
             "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]"
             "/bestvideo[ext=mp4]+bestaudio"
             "/bestvideo+bestaudio"
             "/best[ext=mp4]/best"
-        ),
-        "merge_output_format":  "mp4",
-        "writethumbnail":       False,
-        "writesubtitles":       False,
-        "writeautomaticsub":    False,
-        "noprogress":           True,
-        "overwrites":           True,
-        "trim_file_name":       220,
-        "fragment_retries":     10,
-        "retries":              10,
+        ) if not is_m3u8 else "best",
+        "merge_output_format": "mp4" if not is_m3u8 else "mkv",
+        "writethumbnail":    False,
+        "writesubtitles":    False,
+        "writeautomaticsub": False,
+        "noprogress":        True,
+        "overwrites":        True,
+        "trim_file_name":    200,
+        "fragment_retries":  10,
+        "retries":           10,
+        "file_access_retries": 5,
+        "extractor_retries": 5,
+        "socket_timeout":    30,
+        "progress_hooks":    [_hook],
+        "quiet":             True,
+        "no_warnings":       True,
+        "noplaylist":        True,
+        "concurrent_fragment_downloads": 4,
+        # YouTube bot bypass — ImpersonateTarget object (current yt-dlp API)
+        "impersonate":       ImpersonateTarget("chrome"),
+        "http_headers": {
+            "User-Agent":      UA,
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept":          "*/*",
+            "Sec-Fetch-Mode":  "navigate",
+        },
+        "source_address":    "0.0.0.0",   # force IPv4
+        "postprocessors": [{
+            "key":          "FFmpegMetadata",
+            "add_metadata": True,
+            "add_chapters": True,
+        }],
+        # Sleep between retries — avoids hammering the server
         "retry_sleep_functions": {
-            "http":        lambda n: 3,
-            "fragment":    lambda n: 3,
+            "http":        lambda n: min(3 * n, 15),
+            "fragment":    lambda n: min(3 * n, 15),
             "file_access": lambda n: 3,
             "extractor":   lambda n: 3,
         },
-        "file_access_retries":  5,
-        "extractor_retries":    5,
-        "socket_timeout":       30,
-        "progress_hooks":       [_hook],
-        "quiet":                True,
-        "no_warnings":          True,
-        "noplaylist":           True,
-        "allow_multiple_video_streams": True,
-        "allow_multiple_audio_streams": True,
-        # YouTube bot detection bypass — Chrome impersonation (WZML approach)
-        "impersonate":          "chrome-124",
-        "http_headers": {
-            "User-Agent": UA,
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Sec-Fetch-Mode": "navigate",
-        },
-        "concurrent_fragment_downloads": 4,
-        "postprocessors": [
-            {
-                "key":            "FFmpegMetadata",
-                "add_metadata":   True,
-                "add_chapters":   True,
-                "add_infojson":   "if_exists",
-            }
-        ],
-        # Force IPv4 — avoids YouTube IPv6 throttling/blocks
-        "source_address": "0.0.0.0",
-        # usenetrc allows .netrc credentials for private sites
-        "usenetrc": True,
     }
 
-    # Inject user cookies if configured
+    # Inject cookies if user has set them
     if uid:
         try:
             from bot.database import users_db as _udb
-            s = _udb.get_settings(uid)
-            cp = s.get("cookies_path")
+            s   = _udb.get_settings(uid)
+            cp  = s.get("cookies_path")
             if cp and os.path.exists(cp):
                 opts["cookiefile"] = cp
         except Exception:
             pass
 
-    # For M3U8 streams, use different format selection
-    if ".m3u8" in url.lower() or "m3u8" in url.lower():
-        opts["format"] = "best"
-        opts["merge_output_format"] = "mkv"
-
     tm.set_status(task_id, "downloading")
 
     def _run():
         try:
-            import yt_dlp
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
-                if info and not out_path[0]:
-                    out_path[0] = ydl.prepare_filename(info)
+                if info:
+                    # After post-processing the filename may have changed extension
+                    # prepare_filename gives the final merged filename
+                    final = ydl.prepare_filename(info)
+                    if os.path.exists(final):
+                        out_path[0] = final
+                    # Also check requested_downloads for merged output
+                    for entry in (info.get("requested_downloads") or []):
+                        fn = entry.get("filepath") or entry.get("filename", "")
+                        if fn and os.path.exists(fn):
+                            out_path[0] = fn
+                            break
+        except yt_dlp.utils.DownloadCancelled:
+            pass   # normal cancellation
         except Exception as e:
-            if "Cancelled" not in str(e):
-                err_ref[0] = e
+            err_ref[0] = e
 
     await loop.run_in_executor(None, _run)
 
     if tm.is_cancelled(task_id):
         raise asyncio.CancelledError
-    if err_ref[0]:
-        raise err_ref[0]
 
-    # Fallback: newest file
+    if err_ref[0]:
+        raise RuntimeError(f"yt-dlp: {err_ref[0]}") from err_ref[0]
+
+    # Fallback: find the newest file in dest_dir
     if not out_path[0] or not os.path.exists(out_path[0]):
-        cands = [
+        files = [
             os.path.join(dest_dir, f)
             for f in os.listdir(dest_dir)
             if os.path.isfile(os.path.join(dest_dir, f))
+            and not f.endswith((".part", ".ytdl", ".tmp"))
         ]
-        out_path[0] = max(cands, key=os.path.getmtime) if cands else None
+        out_path[0] = max(files, key=os.path.getmtime) if files else None
 
     if not out_path[0] or not os.path.exists(out_path[0]):
         raise FileNotFoundError(f"yt-dlp produced no output in {dest_dir}")
@@ -258,9 +271,7 @@ async def ytdlp_download(url: str, dest_dir: str, task_id: str, msg, uid: int = 
     return out_path[0]
 
 
-# ─────────────────────────────────────────────
-#  JD Leech (JDownloader2-style link resolver — ported from WZML-X)
-# ─────────────────────────────────────────────
+
 async def jdleech_download(url: str, dest_dir: str, task_id: str, msg) -> str:
     """
     Multi-host download using built-in direct_link_generator extractors.
@@ -370,18 +381,27 @@ async def torrent_download(
     kb = task_kb(task_id)
 
     opts = {
-        "dir":            dest_dir,
-        "pause":          "true",
-        "seed-time":      "0",
-        "follow-torrent": "true",
-        # Increase connection limits for better torrent performance
+        "dir":                       dest_dir,
+        "pause":                     "false",   # start immediately, no manual unpause needed
+        "seed-time":                 "0",
+        "follow-torrent":            "true",
         "max-connection-per-server": "16",
-        "split":          "16",
-        "min-split-size": "5M",
+        "split":                     "16",
+        "min-split-size":            "5M",
+        "max-concurrent-downloads":  "5",
+        "bt-enable-lpd":             "true",
+        "enable-dht":                "true",
+        "enable-peer-exchange":      "true",
+        "bt-save-metadata":          "true",
     }
 
     if existing_gid:
         gid = existing_gid
+        # existing_gid may still be paused — unpause it
+        try:
+            await _aria2_unpause(gid)
+        except Exception:
+            pass
     elif is_magnet:
         gid = await _aria2_add_uri(src, opts)
     else:
@@ -390,14 +410,8 @@ async def torrent_download(
     tm.set_gid(task_id, gid)
     tm.set_status(task_id, "downloading")
 
-    # Unpause to start downloading
-    await asyncio.sleep(0.5)
-    try:
-        await _aria2_unpause(gid)
-    except Exception:
-        pass
-
     last_edit = 0.0
+    SEP       = "━━━━━━━━━━━━━━━━━━━━━━━━"
 
     while True:
         if tm.is_cancelled(task_id):
@@ -413,13 +427,14 @@ async def torrent_download(
             continue
 
         st = status.get("status", "")
+
         if st == "error":
-            err = status.get("errorMessage", "aria2 error")
-            raise RuntimeError(f"Torrent error: {err}")
+            raise RuntimeError(f"Torrent error: {status.get('errorMessage', 'unknown')}")
+
         if st in ("complete", "removed"):
             break
 
-        # Follow magnet metadata chain
+        # Follow magnet/metadata chain to real download GID
         followed = status.get("followedBy", [])
         if followed:
             gid = followed[0]
@@ -428,20 +443,50 @@ async def torrent_download(
 
         now   = time.monotonic()
         done  = int(status.get("completedLength", 0))
-        total = int(status.get("totalLength", 0))
-        speed = int(status.get("downloadSpeed", 0))
+        total = int(status.get("totalLength",     0))
+        speed = int(status.get("downloadSpeed",   0))
+        peers = int(status.get("numSeeders",       0))
+        name  = _aria2_name(status) or "Downloading…"
         eta   = (total - done) / speed if speed and total > done else 0
-        name  = _aria2_name(status) or "downloading…"
-        peers = int(status.get("numSeeders", 0))
 
-        display_name = f"{name} [{peers} peers]" if peers else name
-        tm.update_progress(task_id, name=display_name, done=done, total=total,
+        # Build human-readable values
+        def _hs(b):
+            for u in ("B","KB","MB","GB"):
+                if b < 1024: return f"{b:.1f} {u}"
+                b /= 1024
+            return f"{b:.1f} GB"
+
+        pct    = int(done * 100 / total) if total else 0
+        filled = int(pct / 10)
+        bar    = "█" * filled + "░" * (10 - filled)
+        spd_s  = _hs(speed) + "/s" if speed else "—"
+        mm, ss = divmod(int(eta), 60); hh, mm2 = divmod(mm, 60)
+        eta_s  = (f"{hh}h {mm2}m {ss}s" if hh else f"{mm}m {ss}s" if mm else f"{ss}s") if eta else "—"
+
+        display = f"{name} [{peers} peers]" if peers else name
+        stem    = (display[:38] + "…") if len(display) > 40 else display
+
+        tm.update_progress(task_id, name=display, done=done, total=total,
                            speed=float(speed), eta=eta, status="downloading")
 
         if now - last_edit >= UPDATE_SEC:
             last_edit = now
-            await _safe_edit(msg,
-                downloading_card(display_name, done, total, float(speed), eta, task_id), kb)
+            card = (
+                f"<b>{SEP}</b>\n"
+                f"<b>🧲  TORRENT</b>\n"
+                f"<b>{SEP}</b>\n\n"
+                f"📁 <b>{stem}</b>\n\n"
+                f"<b><code>{bar}</code>  {pct}%</b>\n\n"
+                f"📦 <b>{_hs(done)}</b> / <b>{_hs(total) if total else '?'}</b>\n"
+                f"⚡ <b>{spd_s}</b>  👥 <b>{peers} peers</b>\n"
+                f"🕐 <b>ETA: {eta_s}</b>\n\n"
+                f"<b>{SEP}</b>\n"
+                f"<b>⚡ {config.WATERMARK}</b>"
+            )
+            try:
+                await msg.edit_text(card, parse_mode="html", reply_markup=kb)
+            except Exception:
+                pass
 
     # Collect downloaded files
     try:
