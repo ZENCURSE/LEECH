@@ -21,6 +21,7 @@ beautifulsoup4
 lxml
 cloudscraper
 httpx
+curl_cffi        # needed by direct_link_generator (buzzheavier, etc.)
 js2py
 pySmartDL
 lk21

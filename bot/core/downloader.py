@@ -151,16 +151,14 @@ async def ytdlp_download(url: str, dest_dir: str, task_id: str, msg, uid: int = 
 
     outtmpl = os.path.join(dest_dir, "%(title,fulltitle,alt_title)s %(height)sp.%(ext)s")
 
-    # Base options — works for YouTube, M3U8, and most sites
+    # Base options — ported from WZML-X with YouTube bot bypass
     opts = {
         "outtmpl":              {"default": outtmpl},
-        # Priority: best video+audio merged; fallback to best single stream
         "format": (
             "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]"
             "/bestvideo[ext=mp4]+bestaudio"
             "/bestvideo+bestaudio"
-            "/best[ext=mp4]"
-            "/best"
+            "/best[ext=mp4]/best"
         ),
         "merge_output_format":  "mp4",
         "writethumbnail":       False,
@@ -171,6 +169,12 @@ async def ytdlp_download(url: str, dest_dir: str, task_id: str, msg, uid: int = 
         "trim_file_name":       220,
         "fragment_retries":     10,
         "retries":              10,
+        "retry_sleep_functions": {
+            "http":        lambda n: 3,
+            "fragment":    lambda n: 3,
+            "file_access": lambda n: 3,
+            "extractor":   lambda n: 3,
+        },
         "file_access_retries":  5,
         "extractor_retries":    5,
         "socket_timeout":       30,
@@ -178,17 +182,29 @@ async def ytdlp_download(url: str, dest_dir: str, task_id: str, msg, uid: int = 
         "quiet":                True,
         "no_warnings":          True,
         "noplaylist":           True,
-        # YouTube bot detection bypass — impersonate Chrome
+        "allow_multiple_video_streams": True,
+        "allow_multiple_audio_streams": True,
+        # YouTube bot detection bypass — Chrome impersonation (WZML approach)
         "impersonate":          "chrome-124",
         "http_headers": {
             "User-Agent": UA,
             "Accept-Language": "en-US,en;q=0.9",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Sec-Fetch-Mode": "navigate",
         },
         "concurrent_fragment_downloads": 4,
-        "postprocessors": [{"key": "FFmpegMetadata", "add_metadata": True}],
-        # Force IPv4 to avoid YouTube IPv6 blocks
+        "postprocessors": [
+            {
+                "key":            "FFmpegMetadata",
+                "add_metadata":   True,
+                "add_chapters":   True,
+                "add_infojson":   "if_exists",
+            }
+        ],
+        # Force IPv4 — avoids YouTube IPv6 throttling/blocks
         "source_address": "0.0.0.0",
+        # usenetrc allows .netrc credentials for private sites
+        "usenetrc": True,
     }
 
     # Inject user cookies if configured
