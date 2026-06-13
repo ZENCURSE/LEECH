@@ -1,19 +1,15 @@
 """
-thumbnail.py — HD Auto Thumbnail with Title Logo
+thumbnail.py — HD Movie Background + Title Logo Thumbnail
 
-Priority:
-  1. Fanart.tv  moviethumb — 1000×562 with movie title/logo baked in (BEST)
-  2. Fanart.tv  moviebackground — 1920×1080 backdrop → verified backdrop quality
-  3. TMDB       /images best-voted backdrop
-  4. TMDB       main backdrop_path
-  5. iTunes     HD poster → portrait_to_landscape() with title rendered
-  6. Built-in   title card — colourful gradient bg + large title text (always works)
+Exact flow for each upload:
+  1. Fanart.tv: moviebackground (1920×1080) + hdmovielogo (transparent PNG)
+               → composite: backdrop with real movie title logo overlaid
+  2. Fanart.tv: moviethumb (1000×562) — already has logo baked in by designers
+  3. TMDB: best backdrop + TMDB logo PNG → composite
+  4. iTunes: portrait poster → landscape conversion with title text
+  5. generate_title_card() — guaranteed fallback, always produces result
 
-Quality checks:
-  - Every downloaded image is scored: is it blank/solid colour? Is it too dark?
-  - Fanart moviethumb images already have the title logo baked in
-  - Backdrop images that pass quality check get title text overlaid at bottom
-  - If nothing found, generate_title_card() builds a clean branded card
+Priority within each Fanart type: sorted by likes desc (most popular first).
 """
 
 import os
@@ -24,28 +20,26 @@ import config
 
 _TMDB         = "https://api.themoviedb.org/3"
 _ORIG         = "https://image.tmdb.org/t/p/original"
+_W500         = "https://image.tmdb.org/t/p/w500"
 _FANART_MOVIE = "https://webservice.fanart.tv/v3/movies"
 _FANART_TV    = "https://webservice.fanart.tv/v3/tv"
 _HEADERS      = {
-    "User-Agent":      "Mozilla/5.0 (compatible; NXTHubBot/5.0)",
-    "Accept":          "image/webp,image/jpeg,image/*,*/*",
+    "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept":          "image/webp,image/jpeg,image/png,*/*",
     "Accept-Encoding": "gzip, deflate",
 }
 _TIMEOUT    = aiohttp.ClientTimeout(total=60, connect=10)
-_MIN_BYTES  = 10_000   # 10KB minimum
+_MIN_BYTES  = 10_000
 _SEARCH_LANGS = ["en-US", "hi-IN", "te-IN", "ta-IN", "ml-IN"]
 
-# Font — try system fonts, fall back gracefully
 _FONTS = [
     "/usr/share/fonts/truetype/google-fonts/Poppins-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
     "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
-    "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
 ]
-
-_FONT_REGULAR = [
+_FONTS_REG = [
     "/usr/share/fonts/truetype/google-fonts/Poppins-Medium.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
@@ -53,7 +47,7 @@ _FONT_REGULAR = [
 ]
 
 
-def _best_font(paths: list, size: int):
+def _best_font(paths, size):
     from PIL import ImageFont
     for p in paths:
         if os.path.isfile(p):
@@ -64,55 +58,7 @@ def _best_font(paths: list, size: int):
     return ImageFont.load_default()
 
 
-# ── Image quality checker ─────────────────────────────────────
-
-def _is_good_image(path: str) -> bool:
-    """
-    Returns True if the image is worth using as a thumbnail.
-    Rejects only truly broken images:
-      - Near-solid colour (std < 8) — blank/error images
-      - Completely black (brightness < 5)
-      - Completely white/blown out (brightness > 245)
-    Dark cinematic images (like RRR, Dark Knight) have std > 15 so they pass.
-    We intentionally use loose thresholds — better to show a dark real image
-    than a generated title card.
-    """
-    try:
-        import numpy as np
-        from PIL import Image
-        img = Image.open(path).convert("RGB").resize((160, 90), Image.LANCZOS)
-        arr = np.array(img, dtype=np.float32)
-
-        brightness = arr.mean()
-        std        = arr.std()
-
-        # Reject only completely black/white/broken
-        if brightness < 5:   return False   # completely black
-        if brightness > 245: return False   # completely white/blown out
-        if std < 8:          return False   # near-solid colour = broken image
-
-        return True
-    except Exception:
-        return True
-
-
-def _has_text_region(path: str) -> bool:
-    """
-    Detects title text/logo in bottom 30% of image using edge bright-pixel count.
-    text creates sharp edges — count > 3000 bright pixels confirms text present.
-    """
-    try:
-        import numpy as np
-        from PIL import Image, ImageFilter
-        img    = Image.open(path).convert("L").resize((320, 180), Image.LANCZOS)
-        W, H   = img.size
-        bottom = img.crop((0, int(H * 0.70), W, H))
-        edge   = bottom.filter(ImageFilter.FIND_EDGES)
-        arr    = np.array(edge, dtype=np.float32)
-        return int((arr > 30).sum()) > 3000
-    except Exception:
-        return True
-
+# ── HTTP helpers ──────────────────────────────────────────────
 
 async def _get(session, url, params=None):
     try:
@@ -125,8 +71,21 @@ async def _get(session, url, params=None):
     return {}
 
 
+async def _dl_bytes(session, url) -> bytes | None:
+    """Download raw bytes — used for logo PNGs that need transparency."""
+    try:
+        async with session.get(url, headers=_HEADERS, timeout=_TIMEOUT,
+                               allow_redirects=True) as r:
+            if r.status != 200:
+                return None
+            data = await r.read()
+            return data if len(data) >= 5_000 else None
+    except Exception:
+        return None
+
+
 async def _dl(session, url, dest) -> bool:
-    """Download + convert to JPEG q=95 subsampling=0."""
+    """Download image → JPEG q=95 subsampling=0."""
     try:
         async with session.get(url, headers=_HEADERS, timeout=_TIMEOUT,
                                allow_redirects=True) as r:
@@ -147,6 +106,23 @@ async def _dl(session, url, dest) -> bool:
                 return True
     except Exception:
         return False
+
+
+# ── Quality check ─────────────────────────────────────────────
+
+def _is_good_image(path: str) -> bool:
+    """Reject only truly broken images: solid colour or completely black."""
+    try:
+        import numpy as np
+        from PIL import Image
+        img = Image.open(path).convert("RGB").resize((160, 90), Image.LANCZOS)
+        arr = np.array(img, dtype=np.float32)
+        if arr.mean() < 5:   return False   # completely black
+        if arr.mean() > 245: return False   # completely white
+        if arr.std()  < 8:   return False   # solid colour = broken
+        return True
+    except Exception:
+        return True
 
 
 # ── TMDB search ───────────────────────────────────────────────
@@ -172,14 +148,93 @@ async def _external_ids(session, tmdb_id, mtype):
                       {"api_key": config.TMDB_API_KEY})
 
 
-async def _tmdb_details(session, tmdb_id, mtype):
-    return await _get(session, f"{_TMDB}/{mtype}/{tmdb_id}",
-                      {"api_key": config.TMDB_API_KEY})
+# ── Logo compositor ───────────────────────────────────────────
+
+def _composite_logo(backdrop_path: str, logo_data: bytes, output_path: str,
+                    target_w=1280, target_h=720) -> bool:
+    """
+    Composite a transparent PNG logo onto a backdrop image.
+
+    Layout:
+      - Backdrop scaled to 1280×720 (crop to fill, not letterbox)
+      - Subtle dark gradient at bottom-left for logo readability
+      - Logo scaled to 45% of backdrop width, max height 200px
+      - Positioned bottom-left with 60px padding
+      - Drop shadow under logo for depth
+    """
+    try:
+        from PIL import Image, ImageFilter, ImageDraw
+        import io
+
+        W, H = target_w, target_h
+
+        # ── Backdrop ──────────────────────────────────────────
+        bg = Image.open(backdrop_path).convert("RGB")
+        bw, bh = bg.size
+        scale  = max(W / bw, H / bh)
+        bg     = bg.resize((int(bw * scale), int(bh * scale)), Image.LANCZOS)
+        bw, bh = bg.size
+        bg     = bg.crop(((bw - W) // 2, (bh - H) // 2,
+                           (bw - W) // 2 + W, (bh - H) // 2 + H))
+        canvas = bg.convert("RGBA")
+
+        # ── Gradient vignette at bottom for logo readability ──
+        grad = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        gd   = ImageDraw.Draw(grad)
+        for y in range(H):
+            # Gradient strongest at bottom, fades toward center
+            t = max(0, (y - H * 0.45) / (H * 0.55))
+            alpha = int(185 * (t ** 1.6))
+            gd.line([(0, y), (W, y)], fill=(0, 0, 0, alpha))
+        canvas.alpha_composite(grad)
+
+        # ── Logo ──────────────────────────────────────────────
+        logo = Image.open(io.BytesIO(logo_data)).convert("RGBA")
+        lw, lh = logo.size
+
+        # Scale: max 45% of backdrop width, max 200px tall
+        max_lw = int(W * 0.45)
+        max_lh = 200
+        scale  = min(max_lw / lw, max_lh / lh, 1.0)
+        lw, lh = int(lw * scale), int(lh * scale)
+        logo   = logo.resize((lw, lh), Image.LANCZOS)
+
+        # Position: bottom-left with 60px padding
+        pad  = 60
+        lx   = pad
+        ly   = H - lh - pad
+
+        # Drop shadow
+        shadow = Image.new("RGBA", (lw + 20, lh + 20), (0, 0, 0, 0))
+        # Extract alpha from logo, darken it for shadow
+        r, g, b, a = logo.split()
+        shadow_a = a.point(lambda p: int(p * 0.6))
+        shadow_rgb = Image.new("RGB", (lw, lh), (0, 0, 0))
+        sr, sg, sb = shadow_rgb.split()
+        shadow_img = Image.merge("RGBA", (sr, sg, sb, shadow_a))
+        shadow.paste(shadow_img, (10, 10))
+        shadow = shadow.filter(ImageFilter.GaussianBlur(radius=8))
+        canvas.alpha_composite(shadow, dest=(lx - 4, ly - 4))
+
+        # Paste logo
+        canvas.alpha_composite(logo, dest=(lx, ly))
+
+        canvas.convert("RGB").save(output_path, "JPEG", quality=95, subsampling=0)
+        return True
+
+    except Exception as e:
+        import logging
+        logging.getLogger("thumbnail").error(f"_composite_logo failed: {e}")
+        return False
 
 
-# ── Source 1: Fanart.tv moviethumb (has title logo baked in) ─
+# ── Source 1: Fanart backdrop + logo composite ────────────────
 
-async def _fanart(session, tmdb_id, mtype, dest, title=""):
+async def _fanart_composite(session, tmdb_id, mtype, dest, title="") -> bool:
+    """
+    Fetch moviebackground + hdmovielogo from Fanart.tv and composite them.
+    This gives: real movie backdrop with the official title logo placed on it.
+    """
     if not getattr(config, "FANART_API_KEY", ""):
         return False
 
@@ -193,101 +248,144 @@ async def _fanart(session, tmdb_id, mtype, dest, title=""):
     if not data:
         return False
 
-    # Priority: moviethumb/tvthumb (1000×562 WITH title logo) → background
-    # moviethumb has the movie title logo baked into the image — best option
-    if mtype == "movie":
-        priority = ["moviethumb", "moviebackground", "moviebanner"]
-    else:
-        priority = ["tvthumb", "showbackground", "tvbanner"]
+    # Get logo types (sorted by likes)
+    logo_key  = "hdmovielogo"  if mtype == "movie" else "hdtvlogo"
+    bg_key    = "moviebackground" if mtype == "movie" else "showbackground"
+    thumb_key = "moviethumb"   if mtype == "movie" else "tvthumb"
 
-    for key in priority:
-        arts = sorted(data.get(key, []),
-                      key=lambda x: int(x.get("likes", 0)), reverse=True)
-        for art in arts[:6]:
-            url = art.get("url", "")
-            if not url:
+    logos = sorted(data.get(logo_key, []),
+                   key=lambda x: int(x.get("likes", 0)), reverse=True)
+    bgs   = sorted(data.get(bg_key, []),
+                   key=lambda x: int(x.get("likes", 0)), reverse=True)
+
+    # Try: backdrop + logo composite (best option)
+    if logos and bgs:
+        for bg_art in bgs[:5]:
+            bg_url = bg_art.get("url", "")
+            if not bg_url:
                 continue
-            tmp = dest + ".ftmp.jpg"
-            if await _dl(session, url, tmp):
-                if _is_good_image(tmp):
-                    # For backdrops without logo, overlay the title
-                    if key in ("moviebackground", "showbackground") and title:
-                        _overlay_title(tmp, dest, title)
-                        try: os.remove(tmp)
-                        except Exception: pass
-                    else:
-                        os.rename(tmp, dest)
-                    return True
-                try: os.remove(tmp)
+            bg_tmp = dest + ".bg.jpg"
+            if not await _dl(session, bg_url, bg_tmp):
+                continue
+            if not _is_good_image(bg_tmp):
+                try: os.remove(bg_tmp)
                 except Exception: pass
+                continue
+
+            # Try each logo
+            for logo_art in logos[:5]:
+                logo_url = logo_art.get("url", "")
+                if not logo_url:
+                    continue
+                logo_bytes = await _dl_bytes(session, logo_url)
+                if not logo_bytes:
+                    continue
+                if _composite_logo(bg_tmp, logo_bytes, dest):
+                    try: os.remove(bg_tmp)
+                    except Exception: pass
+                    return True
+
+            # No logo worked — use backdrop with text overlay
+            if _is_good_image(bg_tmp):
+                _overlay_title(bg_tmp, dest, title)
+                try: os.remove(bg_tmp)
+                except Exception: pass
+                return True
+
+    # Fallback: moviethumb (logo already baked in by Fanart designers)
+    thumbs = sorted(data.get(thumb_key, []),
+                    key=lambda x: int(x.get("likes", 0)), reverse=True)
+    for art in thumbs[:5]:
+        url = art.get("url", "")
+        if url and await _dl(session, url, dest) and _is_good_image(dest):
+            return True
+
+    # Fallback: just backdrop with text overlay
+    for bg_art in bgs[:5]:
+        bg_url = bg_art.get("url", "")
+        if not bg_url:
+            continue
+        tmp = dest + ".bgtmp.jpg"
+        if await _dl(session, bg_url, tmp) and _is_good_image(tmp):
+            _overlay_title(tmp, dest, title)
+            try: os.remove(tmp)
+            except Exception: pass
+            return True
+
     return False
 
 
-# ── Source 2+3: TMDB backdrops ────────────────────────────────
+# ── Source 2: TMDB backdrop + logo composite ─────────────────
 
-async def _tmdb_images(session, tmdb_id, mtype, dest, title=""):
+async def _tmdb_composite(session, tmdb_id, mtype, dest, title="") -> bool:
+    """
+    Fetch TMDB backdrop + logo PNG and composite them.
+    TMDB has official title logos under /images with type filtering.
+    """
     if not getattr(config, "TMDB_API_KEY", ""):
         return False
+
     data = await _get(
         session, f"{_TMDB}/{mtype}/{tmdb_id}/images",
         {"api_key": config.TMDB_API_KEY,
-         "include_image_language": "en,hi,te,ta,ml,null"},
+         "include_image_language": "en,hi,te,ta,null"},
     )
+
     backdrops = sorted(
         data.get("backdrops", []),
-        key=lambda x: (float(x.get("vote_average", 0)),
-                       int(x.get("vote_count", 0))),
+        key=lambda x: (float(x.get("vote_average", 0)), int(x.get("vote_count", 0))),
         reverse=True,
     )
-    for bd in backdrops[:8]:
-        path = bd.get("file_path", "")
-        if not path:
+    logos = sorted(
+        data.get("logos", []),
+        key=lambda x: (float(x.get("vote_average", 0)), int(x.get("vote_count", 0))),
+        reverse=True,
+    )
+
+    # Try backdrop + logo composite
+    for bd in backdrops[:5]:
+        bg_path = bd.get("file_path", "")
+        if not bg_path:
             continue
-        tmp = dest + ".ttmp.jpg"
-        if await _dl(session, _ORIG + path, tmp):
-            if _is_good_image(tmp):
-                if title:
-                    _overlay_title(tmp, dest, title)
-                    try: os.remove(tmp)
-                    except Exception: pass
-                else:
-                    os.rename(tmp, dest)
-                return True
-            try: os.remove(tmp)
+        bg_tmp = dest + ".tmbg.jpg"
+        if not await _dl(session, _ORIG + bg_path, bg_tmp):
+            continue
+        if not _is_good_image(bg_tmp):
+            try: os.remove(bg_tmp)
             except Exception: pass
+            continue
+
+        # Try logos (prefer PNG for transparency)
+        png_logos = [l for l in logos if l.get("file_path", "").endswith(".png")]
+        for logo in (png_logos or logos)[:5]:
+            logo_path = logo.get("file_path", "")
+            if not logo_path:
+                continue
+            logo_bytes = await _dl_bytes(session, _ORIG + logo_path)
+            if logo_bytes and _composite_logo(bg_tmp, logo_bytes, dest):
+                try: os.remove(bg_tmp)
+                except Exception: pass
+                return True
+
+        # No logo — overlay title text
+        _overlay_title(bg_tmp, dest, title)
+        try: os.remove(bg_tmp)
+        except Exception: pass
+        return True
+
     return False
 
 
-async def _tmdb_main(session, tmdb_id, mtype, dest, title=""):
-    if not getattr(config, "TMDB_API_KEY", ""):
-        return False
-    data = await _get(session, f"{_TMDB}/{mtype}/{tmdb_id}",
-                      {"api_key": config.TMDB_API_KEY})
-    path = data.get("backdrop_path")
-    if path:
-        tmp = dest + ".mtmp.jpg"
-        if await _dl(session, _ORIG + path, tmp):
-            if _is_good_image(tmp):
-                if title:
-                    _overlay_title(tmp, dest, title)
-                    try: os.remove(tmp)
-                    except Exception: pass
-                else:
-                    os.rename(tmp, dest)
-                return True
-            try: os.remove(tmp)
-            except Exception: pass
-    return False
+# ── Source 3: iTunes portrait → landscape ────────────────────
 
-
-# ── Source 4: iTunes → portrait to landscape ─────────────────
-
-async def _itunes(session, title, mtype, dest):
+async def _itunes(session, title, mtype, dest) -> bool:
     entity = "movie" if mtype == "movie" else "tvShow"
     for country in ("in", "us"):
-        data = await _get(session, "https://itunes.apple.com/search",
-                          {"term": title, "media": "movie" if mtype == "movie" else "tvShow",
-                           "entity": entity, "limit": "6", "country": country})
+        data = await _get(
+            session, "https://itunes.apple.com/search",
+            {"term": title, "media": "movie" if mtype == "movie" else "tvShow",
+             "entity": entity, "limit": "6", "country": country},
+        )
         for item in data.get("results", [])[:6]:
             art = item.get("artworkUrl100") or item.get("artworkUrl60")
             if not art:
@@ -303,63 +401,50 @@ async def _itunes(session, title, mtype, dest):
     return False
 
 
-# ── Title overlay on backdrop ─────────────────────────────────
+# ── Title overlay (backdrop → backdrop + text) ────────────────
 
 def _overlay_title(src: str, dest: str, title: str) -> bool:
-    """
-    Overlay the movie title on a backdrop image.
-    Creates a gradient bar at the bottom with large white title text.
-    This ensures every backdrop has the movie title visible on it.
-    """
+    """Overlay movie title text on a backdrop when no logo PNG is available."""
     try:
         from PIL import Image, ImageDraw, ImageFilter
         img = Image.open(src).convert("RGB")
         W, H = img.size
-
-        # Resize to 1280×720 if needed
         if W != 1280 or H != 720:
-            img = img.resize((1280, 720), Image.LANCZOS)
-            W, H = 1280, 720
+            # Scale to fill 1280×720
+            scale = max(1280 / W, 720 / H)
+            img   = img.resize((int(W * scale), int(H * scale)), Image.LANCZOS)
+            iw, ih = img.size
+            img   = img.crop(((iw - 1280) // 2, (ih - 720) // 2,
+                               (iw - 1280) // 2 + 1280, (ih - 720) // 2 + 720))
+            W, H  = 1280, 720
 
         canvas = img.convert("RGBA")
-
-        # Gradient bar at bottom (160px tall)
-        grad = Image.new("RGBA", (W, 180), (0, 0, 0, 0))
-        gd   = ImageDraw.Draw(grad)
-        for y in range(180):
-            alpha = int(230 * (y / 179) ** 1.4)
+        grad   = Image.new("RGBA", (W, 200), (0, 0, 0, 0))
+        gd     = ImageDraw.Draw(grad)
+        for y in range(200):
+            alpha = int(220 * (y / 199) ** 1.5)
             gd.line([(0, y), (W, y)], fill=(0, 0, 0, alpha))
-        canvas.alpha_composite(grad, dest=(0, H - 180))
+        canvas.alpha_composite(grad, dest=(0, H - 200))
 
-        draw       = ImageDraw.Draw(canvas)
-        title_font = _best_font(_FONTS, 54)
-        sub_font   = _best_font(_FONT_REGULAR, 24)
-
-        # Wrap title
-        lines = _wrap_text(draw, title.upper(), title_font, W - 100)
-        line_h = 62
-        total_h = len(lines) * line_h
-        text_y  = H - 30 - total_h
-
+        draw  = ImageDraw.Draw(canvas)
+        font  = _best_font(_FONTS, 58)
+        lines = _wrap_text(draw, title.upper(), font, W - 120)
+        lh    = 68
+        ty    = H - 36 - len(lines) * lh
         for line in lines:
             try:
-                bbox = draw.textbbox((0, 0), line, font=title_font)
-                lw = bbox[2] - bbox[0]
+                bbox = draw.textbbox((0, 0), line, font=font)
+                lw   = bbox[2] - bbox[0]
             except Exception:
                 lw = len(line) * 28
             lx = (W - lw) // 2
-            # Shadow
-            draw.text((lx + 2, text_y + 2), line, font=title_font,
-                      fill=(0, 0, 0, 200))
-            # Main text
-            draw.text((lx, text_y), line, font=title_font,
-                      fill=(255, 255, 255, 255))
-            text_y += line_h
+            draw.text((lx + 2, ty + 2), line, font=font, fill=(0, 0, 0, 200))
+            draw.text((lx, ty), line, font=font, fill=(255, 255, 255, 255))
+            ty += lh
 
         canvas.convert("RGB").save(dest, "JPEG", quality=95, subsampling=0)
         return True
     except Exception:
-        # Just copy if PIL fails
         try:
             import shutil
             shutil.copy2(src, dest)
@@ -395,10 +480,9 @@ def _portrait_to_landscape(input_path: str, output_path: str, title: str = "") -
     try:
         from PIL import Image, ImageFilter, ImageDraw
         W, H = 1280, 720
-        img = Image.open(input_path).convert("RGB")
+        img  = Image.open(input_path).convert("RGB")
         iw, ih = img.size
 
-        # Background: fill → blur → darken
         bg_sc = max(W / iw, H / ih)
         bg    = img.resize((int(iw * bg_sc), int(ih * bg_sc)), Image.LANCZOS)
         bw, bh = bg.size
@@ -408,49 +492,45 @@ def _portrait_to_landscape(input_path: str, output_path: str, title: str = "") -
         dark  = Image.new("RGB", (W, H), (0, 0, 0))
         canvas = Image.blend(bg, dark, alpha=0.55).convert("RGBA")
 
-        # Foreground: sharp poster
         pad_top    = 36
-        pad_bottom = 130 if title else 40
+        pad_bottom = 140 if title else 40
         avail_h    = H - pad_top - pad_bottom
         avail_w    = int(W * 0.52)
         fg_sc = min(avail_w / iw, avail_h / ih)
         fw, fh = int(iw * fg_sc), int(ih * fg_sc)
         fg = img.resize((fw, fh), Image.LANCZOS)
 
-        # Drop shadow
         shadow = Image.new("RGBA", (fw + 16, fh + 16), (0, 0, 0, 0))
         sb = Image.new("RGBA", (fw, fh), (0, 0, 0, 140))
         shadow.paste(sb, (8, 8))
         shadow = shadow.filter(ImageFilter.GaussianBlur(radius=10))
-        sx = (W - fw) // 2 - 8
-        sy = pad_top + (avail_h - fh) // 2 - 8
-        canvas.alpha_composite(shadow, dest=(max(0, sx), max(0, sy)))
+        canvas.alpha_composite(shadow, dest=(max(0, (W - fw) // 2 - 8),
+                                             max(0, pad_top + (avail_h - fh) // 2 - 8)))
         canvas.paste(fg, ((W - fw) // 2, pad_top + (avail_h - fh) // 2))
 
-        # Title overlay
         if title:
-            grad = Image.new("RGBA", (W, 180), (0, 0, 0, 0))
+            grad = Image.new("RGBA", (W, 200), (0, 0, 0, 0))
             gd   = ImageDraw.Draw(grad)
-            for y in range(180):
-                alpha = int(230 * (y / 179) ** 1.4)
+            for y in range(200):
+                alpha = int(230 * (y / 199) ** 1.4)
                 gd.line([(0, y), (W, y)], fill=(0, 0, 0, alpha))
-            canvas.alpha_composite(grad, dest=(0, H - 180))
+            canvas.alpha_composite(grad, dest=(0, H - 200))
 
-            draw       = ImageDraw.Draw(canvas)
-            title_font = _best_font(_FONTS, 54)
-            lines      = _wrap_text(draw, title.upper(), title_font, W - 100)
-            line_h     = 62
-            text_y     = H - 30 - len(lines) * line_h
+            draw  = ImageDraw.Draw(canvas)
+            font  = _best_font(_FONTS, 58)
+            lines = _wrap_text(draw, title.upper(), font, W - 120)
+            lh    = 68
+            ty    = H - 36 - len(lines) * lh
             for line in lines:
                 try:
-                    bbox = draw.textbbox((0, 0), line, font=title_font)
-                    lw = bbox[2] - bbox[0]
+                    bbox = draw.textbbox((0, 0), line, font=font)
+                    lw   = bbox[2] - bbox[0]
                 except Exception:
                     lw = len(line) * 28
                 lx = (W - lw) // 2
-                draw.text((lx + 2, text_y + 2), line, font=title_font, fill=(0, 0, 0, 200))
-                draw.text((lx, text_y), line, font=title_font, fill=(255, 255, 255, 255))
-                text_y += line_h
+                draw.text((lx + 2, ty + 2), line, font=font, fill=(0, 0, 0, 200))
+                draw.text((lx, ty), line, font=font, fill=(255, 255, 255, 255))
+                ty += lh
 
         canvas.convert("RGB").save(output_path, "JPEG", quality=95, subsampling=0)
         return True
@@ -467,127 +547,107 @@ def _portrait_to_landscape(input_path: str, output_path: str, title: str = "") -
             return False
 
 
-# ── Source 5: Generated title card (guaranteed fallback) ─────
+# ── Source 5: Generated title card ───────────────────────────
 
 def generate_title_card(title: str, output_path: str,
                         year: str = "", genre: str = "") -> bool:
-    """
-    Generate a branded 1280×720 title card when no image is available.
-
-    Design:
-      - Dark gradient background (deep blue-black, not flat black)
-      - Subtle film-grain texture overlay
-      - Large white title text (centred)
-      - Year / genre in smaller text below
-      - NXT HUB watermark bottom-right
-      - Decorative lines for polish
-    """
+    """Guaranteed fallback — cinematic dark gradient with large title text."""
     try:
         import random
-        from PIL import Image, ImageDraw, ImageFilter
-
+        from PIL import Image, ImageDraw
         W, H = 1280, 720
         canvas = Image.new("RGBA", (W, H))
         draw   = ImageDraw.Draw(canvas)
 
-        # ── Background: multi-stop gradient ──────────────────
-        # Deep cinematic dark blue to near-black
-        top_colour    = (8, 15, 35)
-        bottom_colour = (2, 5, 12)
+        # Multi-stop gradient background
+        top_c, bot_c = (8, 15, 35), (2, 5, 12)
         for y in range(H):
             t = y / H
-            r = int(top_colour[0] + (bottom_colour[0] - top_colour[0]) * t)
-            g = int(top_colour[1] + (bottom_colour[1] - top_colour[1]) * t)
-            b = int(top_colour[2] + (bottom_colour[2] - top_colour[2]) * t)
+            r = int(top_c[0] + (bot_c[0] - top_c[0]) * t)
+            g = int(top_c[1] + (bot_c[1] - top_c[1]) * t)
+            b = int(top_c[2] + (bot_c[2] - top_c[2]) * t)
             draw.line([(0, y), (W, y)], fill=(r, g, b, 255))
 
-        # ── Film grain texture ────────────────────────────────
+        # Film grain
         rng = random.Random(hash(title) % (2**31))
         for _ in range(18000):
-            x  = rng.randint(0, W - 1)
-            y  = rng.randint(0, H - 1)
-            br = rng.randint(12, 40)
+            x, y = rng.randint(0, W-1), rng.randint(0, H-1)
+            br   = rng.randint(12, 40)
             draw.point((x, y), fill=(br, br, br, rng.randint(30, 70)))
 
-        # ── Decorative horizontal lines ───────────────────────
-        accent = (220, 170, 30)   # golden accent
-        for i, y_pos in enumerate([H // 2 - 90, H // 2 + 90]):
-            alpha = 180 if i == 0 else 120
-            draw.line([(120, y_pos), (W - 120, y_pos)],
-                      fill=(*accent, alpha), width=1)
+        # Accent lines
+        acc = (220, 170, 30)
+        for y_pos in [H // 2 - 90, H // 2 + 90]:
+            draw.line([(120, y_pos), (W-120, y_pos)], fill=(*acc, 160), width=1)
 
-        # ── Corner accent marks ───────────────────────────────
-        cl = 40   # corner length
-        ct = 2    # corner thickness
-        ca = (220, 170, 30, 160)
-        for cx, cy, dx, dy in [(80, 80, 1, 1), (W-80, 80, -1, 1),
-                                (80, H-80, 1, -1), (W-80, H-80, -1, -1)]:
-            draw.line([(cx, cy), (cx + dx * cl, cy)], fill=ca, width=ct)
-            draw.line([(cx, cy), (cx, cy + dy * cl)], fill=ca, width=ct)
+        # Corner marks
+        for cx, cy, dx, dy in [(80,80,1,1),(W-80,80,-1,1),(80,H-80,1,-1),(W-80,H-80,-1,-1)]:
+            draw.line([(cx, cy), (cx+dx*40, cy)], fill=(*acc, 160), width=2)
+            draw.line([(cx, cy), (cx, cy+dy*40)], fill=(*acc, 160), width=2)
 
-        # ── NXT HUB logo top-left ─────────────────────────────
-        brand_font = _best_font(_FONTS, 20)
-        draw.text((80, 58), f"⚡ {getattr(config, 'WATERMARK', 'NXT HUB')}",
-                  font=brand_font, fill=(220, 170, 30, 200))
+        # Watermark
+        wm_font = _best_font(_FONTS, 20)
+        draw.text((80, 58), f"⚡ {getattr(config,'WATERMARK','NXT HUB')}",
+                  font=wm_font, fill=(220, 170, 30, 200))
 
-        # ── Title text (centred, wrapped) ─────────────────────
+        # Title
         title_font = _best_font(_FONTS, 72)
-        lines      = _wrap_text(draw, title.upper(), title_font, W - 180)
-        line_h     = 82
-        total_h    = len(lines) * line_h
-        text_y     = (H - total_h) // 2 - 20
-
+        lines = _wrap_text(draw, title.upper(), title_font, W - 180)
+        lh    = 84
+        ty    = (H - len(lines) * lh) // 2 - 20
         for line in lines:
             try:
                 bbox = draw.textbbox((0, 0), line, font=title_font)
-                lw = bbox[2] - bbox[0]
+                lw   = bbox[2] - bbox[0]
             except Exception:
                 lw = len(line) * 36
             lx = (W - lw) // 2
+            for off, a in [(4, 60), (2, 100), (1, 140)]:
+                draw.text((lx+off, ty+off), line, font=title_font, fill=(30,60,120,a))
+            draw.text((lx, ty), line, font=title_font, fill=(255, 255, 255, 255))
+            ty += lh
 
-            # Glow effect — multiple blurred shadows
-            for offset, alpha in [(4, 60), (2, 100), (1, 140)]:
-                draw.text((lx + offset, text_y + offset), line,
-                          font=title_font, fill=(30, 60, 120, alpha))
-            # Main text white
-            draw.text((lx, text_y), line, font=title_font,
-                      fill=(255, 255, 255, 255))
-            text_y += line_h
-
-        # ── Year / genre subtitle ─────────────────────────────
+        # Year / genre
         sub_parts = [p for p in [year, genre] if p]
         if sub_parts:
-            sub_text = "  ·  ".join(sub_parts)
-            sub_font = _best_font(_FONT_REGULAR, 28)
+            sf = _best_font(_FONTS_REG, 28)
+            sub = "  ·  ".join(sub_parts)
             try:
-                bbox = draw.textbbox((0, 0), sub_text, font=sub_font)
-                sw = bbox[2] - bbox[0]
+                bbox = draw.textbbox((0, 0), sub, font=sf)
+                sw   = bbox[2] - bbox[0]
             except Exception:
-                sw = len(sub_text) * 14
-            draw.text(((W - sw) // 2, text_y + 8), sub_text,
-                      font=sub_font, fill=(180, 180, 200, 200))
+                sw = len(sub) * 14
+            draw.text(((W-sw)//2, ty+8), sub, font=sf, fill=(180,180,200,200))
 
-        # ── Save ──────────────────────────────────────────────
         canvas.convert("RGB").save(output_path, "JPEG", quality=95, subsampling=0)
         return True
-
-    except Exception as e:
-        import logging
-        logging.getLogger("thumbnail").error(f"generate_title_card failed: {e}")
+    except Exception:
         return False
 
 
-# ── Main public function ──────────────────────────────────────
+# ── has_text_region ───────────────────────────────────────────
+
+def _has_text_region(path: str) -> bool:
+    try:
+        import numpy as np
+        from PIL import Image, ImageFilter
+        img    = Image.open(path).convert("L").resize((320, 180), Image.LANCZOS)
+        W, H   = img.size
+        bottom = img.crop((0, int(H*0.70), W, H))
+        edge   = bottom.filter(ImageFilter.FIND_EDGES)
+        arr    = np.array(edge, dtype=np.float32)
+        return int((arr > 30).sum()) > 3000
+    except Exception:
+        return True
+
+
+# ── Main ─────────────────────────────────────────────────────
 
 async def get_thumbnail(title: str, year: str | None, dest: str,
                         title_overlay: str = "") -> bool:
     """
-    Fetch or generate HD landscape thumbnail with movie title visible.
-
-    1. Tries Fanart (moviethumb has logo baked in — best)
-    2. Tries TMDB backdrops + overlays title text
-    3. Tries iTunes poster + converts to landscape with title
-    4. Falls back to generate_title_card() — always works
+    Fetch or generate HD movie background with title logo.
+    Always succeeds — falls back to generate_title_card() if all sources fail.
     """
     overlay = title_overlay or title
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
@@ -596,23 +656,17 @@ async def get_thumbnail(title: str, year: str | None, dest: str,
         tmdb_id, mtype = await _tmdb_search(session, title, year)
 
         if tmdb_id:
-            # Source 1: Fanart moviethumb (has title/logo baked in)
-            if await _fanart(session, tmdb_id, mtype, dest, overlay):
+            # Best: Fanart backdrop + hdmovielogo composite
+            if await _fanart_composite(session, tmdb_id, mtype, dest, overlay):
+                return True
+            # Good: TMDB backdrop + TMDB logo composite
+            if await _tmdb_composite(session, tmdb_id, mtype, dest, overlay):
                 return True
 
-            # Source 2: TMDB /images backdrops + title overlay
-            if await _tmdb_images(session, tmdb_id, mtype, dest, overlay):
-                return True
-
-            # Source 3: TMDB main backdrop + title overlay
-            if await _tmdb_main(session, tmdb_id, mtype, dest, overlay):
-                return True
-
-        # Source 4: iTunes portrait → landscape with title
+        # iTunes portrait → landscape with title text
         mt = mtype if tmdb_id else "movie"
         if await _itunes(session, title, mt, dest):
             return True
 
-    # Source 5: Generated title card — always succeeds
-    genre = ""
-    return generate_title_card(overlay, dest, year or "", genre)
+    # Guaranteed: branded title card
+    return generate_title_card(overlay, dest, year or "", "")
