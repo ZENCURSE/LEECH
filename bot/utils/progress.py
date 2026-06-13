@@ -1,44 +1,30 @@
 """
-progress.py — Modern progress cards for NXT HUB
+progress.py — Clean progress cards for NXT HUB
 """
 import config
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from bot.utils.size_utils import human_size, human_speed, human_time
+from bot.utils.size_utils import human_size, human_speed, human_time, bar
 
-# ── Bar characters ────────────────────────────────────────────
-_F = "🔴"
-_E = "⭕"
-_W = 12
+# ── Dividers ──────────────────────────────────────────────────
+_DIV  = "─" * 26
+_BDIV = "━" * 26
 
-def _bar(pct: float) -> str:
-    pct = max(0.0, min(100.0, pct))
-    n   = round(_W * pct / 100)
-    return _F * n + _E * (_W - n)
-
-def _pct_label(pct: float) -> str:
-    return f"{pct:5.1f}%"
-
-# ── Separator ─────────────────────────────────────────────────
-SEP = "━━━━━━━━━━━━━━━━━━━━━━━━"
-
-# ── Status styles ─────────────────────────────────────────────
+# ── Status meta ───────────────────────────────────────────────
 _STYLE = {
-    "downloading": ("⬇️", "DOWNLOADING"),
-    "uploading":   ("📤", "UPLOADING"),
-    "processing":  ("⚙️", "PROCESSING"),
-    "queued":      ("🕐", "QUEUED"),
-    "cancelled":   ("🚫", "CANCELLED"),
-    "done":        ("✅", "DONE"),
-    "error":       ("❌", "ERROR"),
+    "downloading": ("⬇️", "Downloading"),
+    "uploading":   ("📤", "Uploading"),
+    "processing":  ("⚙️", "Processing"),
+    "queued":      ("🕐", "Queued"),
+    "cancelled":   ("🚫", "Cancelled"),
+    "done":        ("✅", "Done"),
+    "error":       ("❌", "Error"),
 }
 
-def cancel_cmd(tid: str) -> str:
-    return f"<code>/c1_{tid.lower()}</code>"
-
-def task_kb(task_id: str) -> InlineKeyboardMarkup:
+# ── Keyboards ─────────────────────────────────────────────────
+def task_kb(tid: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("🔄 Refresh", callback_data=f"prog_refresh:{task_id}"),
-        InlineKeyboardButton("❌ Cancel",  callback_data=f"prog_cancel:{task_id}"),
+        InlineKeyboardButton("🔄 Refresh", callback_data=f"prog_refresh:{tid}"),
+        InlineKeyboardButton("❌ Cancel",  callback_data=f"prog_cancel:{tid}"),
     ]])
 
 def group_task_kb(uid: int) -> InlineKeyboardMarkup:
@@ -46,48 +32,52 @@ def group_task_kb(uid: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton("🔄 Refresh", callback_data=f"grp_refresh:{uid}"),
     ]])
 
-# ── Slots line ────────────────────────────────────────────────
+# ── Cancel command helper (used in group cards) ───────────────
+def cancel_cmd(tid: str) -> str:
+    return f"<code>/c1_{tid.lower()}</code>"
+
+# ── Slot / speed summary ──────────────────────────────────────
 def _slots_line() -> str:
     from bot.core.task_manager import stats
     s = stats()
-    if s.get("total_slots", 0) > 0:
-        return f"🟢 <b>{s['active']}/{s['total_slots']}</b> active  🟡 <b>{s['queued']}</b> queued"
-    return f"🟢 <b>{s['active']}</b> active  🟡 <b>{s['queued']}</b> queued"
+    active  = s.get("active", 0)
+    queued  = s.get("queued", 0)
+    slots   = s.get("total_slots", 0)
+    slot_str = f"{active}/{slots}" if slots else str(active)
+    return f"🟢 <b>{slot_str}</b> active  🟡 <b>{queued}</b> queued"
 
 def _total_speed() -> float:
     from bot.core.task_manager import stats
     return stats().get("total_speed", 0.0)
 
+# ── Name truncation ───────────────────────────────────────────
+def _trim(name: str, n: int = 40) -> str:
+    return (name[:n - 1] + "…") if len(name) > n else name
+
 
 # ══════════════════════════════════════════════════════════════
-#  DOWNLOADING / UPLOADING card  — all bold, full filename
+#  ACTIVE card  (downloading / uploading)
 # ══════════════════════════════════════════════════════════════
 def _active_card(status: str, name: str, done: int, total: int,
                  speed: float, eta: float, tid: str) -> str:
-    icon, label = _STYLE.get(status, ("⚙️", status.upper()))
-    pct         = (done / total * 100) if total else 0
+    icon, label = _STYLE.get(status, ("⚙️", status.title()))
+    pct = (done / total * 100) if total else 0
+    progress_bar = bar(pct, 16)
 
-    lines = [
-        f"<b>{SEP}</b>",
-        f"<b>{icon} {label}</b>",
-        f"<b>{SEP}</b>",
+    return "\n".join([
+        f"{icon} <b>{label}</b>",
+        f"<b>{_BDIV}</b>",
+        f"📄 <b>{_trim(name)}</b>",
         "",
-        f"🎬 <b>{name}</b>",
+        f"<code>[{progress_bar}]</code>  <b>{pct:.1f}%</b>",
         "",
-        f"<b><code>{_bar(pct)}</code>  {_pct_label(pct)}</b>",
+        f"📦 {human_size(done)} / {human_size(total)}",
+        f"⚡ {human_speed(speed)}   ⏳ ETA {human_time(eta)}",
         "",
-        f"📦 <b>{human_size(done)}</b> of <b>{human_size(total)}</b>",
-        f"⚡ <b>{human_speed(speed)}</b>",
-        f"⏳ ETA <b>{human_time(eta)}</b>",
-        "",
-        f"🆔 <b><code>{tid}</code></b>",
-        f"✖️ Stop → {cancel_cmd(tid)}",
-        "",
-        f"<b>{SEP}</b>",
-        f"<b>⚡ {config.WATERMARK}</b>",
-    ]
-    return "\n".join(lines)
-
+        f"<b>{_DIV}</b>",
+        f"🆔 <code>{tid}</code>   ✖️ {cancel_cmd(tid)}",
+        f"<i>{config.WATERMARK}</i>",
+    ])
 
 def downloading_card(name, done, total, speed, eta, tid):
     return _active_card("downloading", name, done, total, speed, eta, tid)
@@ -97,97 +87,87 @@ def uploading_card(name, done, total, speed, eta, tid):
 
 
 # ══════════════════════════════════════════════════════════════
-#  DONE card  — full bold, full filename
+#  DONE card
 # ══════════════════════════════════════════════════════════════
 def done_card(name: str, size: int, elapsed: float, avg_speed: float,
               tid: str, username: str = "") -> str:
-    stem = (name[:38] + "…") if len(name) > 40 else name
-    return "\n".join(filter(None, [
-        f"<b>{SEP}</b>",
-        "<b>✅  UPLOAD COMPLETE</b>",
-        f"<b>{SEP}</b>",
+    lines = [
+        "✅ <b>Upload Complete</b>",
+        f"<b>{_BDIV}</b>",
+        f"📄 <b>{_trim(name)}</b>",
         "",
-        f"🎬 <b>{stem}</b>",
+        f"<code>[{'█' * 16}]</code>  <b>100.0%</b>",
         "",
-        f"<b><code>{'🔴' * 12}</code>  100.0%</b>",
+        f"📦 {human_size(size)}",
+        f"⚡ Avg {human_speed(avg_speed)}   ⏱ {human_time(elapsed)}",
+    ]
+    if username:
+        lines.append(f"👤 {username}")
+    lines += [
         "",
-        f"📦 <b>{human_size(size)}</b>",
-        f"⚡ <b>{human_speed(avg_speed)}</b>",
-        f"⏱ <b>{human_time(elapsed)}</b>",
-        f"👤 <b>{username}</b>" if username else None,
-        "",
-        f"<b>{SEP}</b>",
-        f"<b>⚡ {config.WATERMARK}</b>",
-    ]))
+        f"<i>{config.WATERMARK}</i>",
+    ]
+    return "\n".join(lines)
 
 
 # ══════════════════════════════════════════════════════════════
-#  COMPLETION card  — full bold, full filename
+#  COMPLETION card  (final message sent to user)
 # ══════════════════════════════════════════════════════════════
 def completion_card(filename: str, size: int, elapsed: float, username: str) -> str:
-    stem = (filename[:34] + "…") if len(filename) > 36 else filename
     return "\n".join([
-        "╔═══════════════════════════╗",
-        "║   🎉  <b>TASK COMPLETED</b>  🎉   ║",
-        "╚═══════════════════════════╝",
+        "🎉 <b>Task Completed</b>",
+        f"<b>{_BDIV}</b>",
+        f"📄 <b>{_trim(filename, 36)}</b>",
         "",
-        f"🎬  <code>{stem}</code>",
+        f"📦 {human_size(size)}   ⏱ {human_time(elapsed)}",
+        f"👤 {username}",
         "",
-        "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄",
-        f"📦  <b>Size</b>      {human_size(size)}",
-        f"⏱  <b>Time</b>      {human_time(elapsed)}",
-        f"👤  <b>User</b>      {username}",
-        "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄",
-        "",
-        f"<b>⚡ {config.WATERMARK}</b>",
+        f"<i>{config.WATERMARK}</i>",
     ])
+
+
+# ══════════════════════════════════════════════════════════════
+#  CANCEL card
+# ══════════════════════════════════════════════════════════════
+def cancel_card(tid: str, name: str = "") -> str:
+    lines = [
+        "🚫 <b>Task Cancelled</b>",
+        f"<b>{_BDIV}</b>",
+    ]
+    if name:
+        lines.append(f"📄 {_trim(name, 32)}")
+    lines += [
+        f"🆔 <code>{tid}</code>",
+        "",
+        "<i>Send a new link to start again.</i>",
+        f"<i>{config.WATERMARK}</i>",
+    ]
+    return "\n".join(lines)
 
 
 # ══════════════════════════════════════════════════════════════
 #  ERROR card
 # ══════════════════════════════════════════════════════════════
-def cancel_card(tid: str, name: str = "") -> str:
-    stem = (name[:30] + "…") if len(name) > 32 else name
-    lines = [
-        f"<b>{SEP}</b>",
-        "<b>🚫 TASK CANCELLED</b>",
-        f"<b>{SEP}</b>",
-        "",
-    ]
-    if stem:
-        lines += [f"📄 <code>{stem}</code>", ""]
-    lines += [
-        f"🆔 <code>{tid}</code>",
-        "",
-        "↩️ <i>Send a new link to start again.</i>",
-        "",
-        f"<b>{SEP}</b>",
-        f"<b>⚡ {config.WATERMARK}</b>",
-    ]
-    return "\n".join(lines)
-
-
 def error_card(tid: str, error) -> str:
     return "\n".join([
-        f"<b>{SEP}</b>",
-        "<b>❌ ERROR</b>",
-        f"<b>{SEP}</b>",
+        "❌ <b>Task Failed</b>",
+        f"<b>{_BDIV}</b>",
+        f"🆔 <code>{tid}</code>",
         "",
-        f"🆔 <b><code>{tid}</code></b>",
-        f"💬 <code>{str(error)[:280]}</code>",
+        f"<code>{str(error)[:260]}</code>",
         "",
-        f"<b>{SEP}</b>",
-        f"<b>⚡ {config.WATERMARK}</b>",
+        "<i>Try again or contact support.</i>",
+        f"<i>{config.WATERMARK}</i>",
     ])
 
 
 # ══════════════════════════════════════════════════════════════
-#  GROUP / STATUS task block  — bold, separator, full filename
+#  TASK BLOCK  (used inside status / group cards)
 # ══════════════════════════════════════════════════════════════
 def _task_block(num: int, tid: str, task: dict) -> str:
     p      = task.get("progress", {})
     status = task.get("status", "queued")
-    icon, label = _STYLE.get(status, ("⚙️", status.upper()))
+    icon, label = _STYLE.get(status, ("⚙️", status.title()))
     name   = p.get("name") or task.get("name") or "…"
     done   = p.get("done",  0)
     total  = p.get("total", 0)
@@ -197,66 +177,57 @@ def _task_block(num: int, tid: str, task: dict) -> str:
 
     lines = [
         f"<b>{num}. {icon} {label}</b>",
-        f"🎬 <b>{name}</b>",
+        f"📄 {_trim(name, 36)}",
     ]
 
     if status in ("downloading", "uploading"):
         lines += [
-            f"<b><code>{_bar(pct)}</code>  {_pct_label(pct)}</b>",
-            f"📦 <b>{human_size(done)}</b> / <b>{human_size(total)}</b>",
-            f"⚡ <b>{human_speed(speed)}</b>  ⏳ <b>{human_time(eta)}</b>",
+            f"<code>[{bar(pct, 14)}]</code> {pct:.0f}%",
+            f"📦 {human_size(done)} / {human_size(total)}   ⚡ {human_speed(speed)}   ⏳ {human_time(eta)}",
         ]
 
-    lines += [
-        f"🆔 <b><code>{tid}</code></b>  ✖️ {cancel_cmd(tid)}",
-    ]
+    lines.append(f"🆔 <code>{tid}</code>   ✖️ {cancel_cmd(tid)}")
     return "\n".join(lines)
 
 
 # ══════════════════════════════════════════════════════════════
-#  GROUP card  (single message, all user tasks)
+#  GROUP card
 # ══════════════════════════════════════════════════════════════
 def group_task_card(uid: int, uploading_to_pm: bool = False) -> str:
     from bot.core import task_manager as tm
     tasks = {tid: d for tid, d in tm.all_tasks().items() if d["user_id"] == uid}
 
-    header_lines = [
-        f"<b>{SEP}</b>",
-        f"<b>🚀 NXT HUB</b>",
-        f"{_slots_line()}",
-        f"⚡ Speed: <b>{human_speed(_total_speed())}</b>",
-    ]
-    if uploading_to_pm:
-        header_lines.append("📨 <i>Sending to your PM…</i>")
-
-    header_lines.append(f"<b>{SEP}</b>")
+    header = "\n".join(filter(None, [
+        f"🚀 <b>NXT HUB</b>",
+        _slots_line(),
+        f"⚡ {human_speed(_total_speed())}",
+        "📨 <i>Sending to your PM…</i>" if uploading_to_pm else None,
+        f"<b>{_BDIV}</b>",
+    ]))
 
     if not tasks:
-        return "\n".join(header_lines) + "\n\n📭 <i>No active tasks.</i>"
+        return header + "\n\n📭 <i>No active tasks.</i>"
 
-    header  = "\n".join(header_lines)
-    # Each task block gets its own separator above and below
-    divider = f"\n<b>{SEP}</b>\n"
+    divider = f"\n<b>{_DIV}</b>\n"
     blocks  = [_task_block(i, tid, task) for i, (tid, task) in enumerate(tasks.items(), 1)]
-    return header + "\n\n" + divider.join(blocks) + f"\n<b>{SEP}</b>\n<b>⚡ {config.WATERMARK}</b>"
+    return header + "\n\n" + divider.join(blocks) + f"\n\n<i>{config.WATERMARK}</i>"
 
 
 # ══════════════════════════════════════════════════════════════
-#  /status  card
+#  /status card
 # ══════════════════════════════════════════════════════════════
 def status_message(tasks: dict) -> str:
     header = "\n".join([
-        f"<b>{SEP}</b>",
-        "<b>📊 NXT HUB — STATUS</b>",
-        f"{_slots_line()}",
-        f"⚡ Speed: <b>{human_speed(_total_speed())}</b>",
-        f"<b>{SEP}</b>",
+        "📊 <b>My Tasks</b>",
+        f"<b>{_BDIV}</b>",
+        _slots_line(),
+        f"⚡ {human_speed(_total_speed())}",
+        f"<b>{_DIV}</b>",
     ])
 
     if not tasks:
         return header + "\n\n📭 <i>No active tasks.</i>"
 
-    divider = f"\n<b>{SEP}</b>\n"
+    divider = f"\n<b>{_DIV}</b>\n"
     blocks  = [_task_block(i, tid, task) for i, (tid, task) in enumerate(tasks.items(), 1)]
-    return header + "\n\n" + divider.join(blocks) + f"\n<b>{SEP}</b>\n<b>⚡ {config.WATERMARK}</b>"
-    
+    return header + "\n\n" + divider.join(blocks) + f"\n\n<i>{config.WATERMARK}</i>"
