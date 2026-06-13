@@ -377,7 +377,11 @@ async def upload_file(client, chat_id: int, file_path: str,
         except Exception:
             pass  # invalid regex — skip
 
-    dump_channel = s.get("dump_channel", "") or ""
+    # Per-user dump_channel from DB; fall back to owner's global DUMP_CHANNEL from config
+    dump_channel = (
+        s.get("dump_channel", "") or
+        str(getattr(config, "DUMP_CHANNEL", 0) or "") or ""
+    )
     caption_tpl  = s.get("caption", "") or ""
 
     # ── Build CLEAN filename (no tokens embedded) ──────────────
@@ -529,13 +533,19 @@ async def upload_file(client, chat_id: int, file_path: str,
             try: os.remove(p)
             except Exception: pass
 
-    # ── Dump channel — forward file to user's configured channel ──
+    # ── Dump channel — forward file to owner's/user's dump channel ──
     if dump_channel and last_sent_msg:
         try:
-            dc = int(dump_channel)
-            await last_sent_msg.copy(dc)
+            from bot.core.dump_channel import send_to_dump
+            _dump_user = getattr(origin_msg, "from_user", None) if origin_msg else None
+            await send_to_dump(client, last_sent_msg, _dump_user, final_name)
         except Exception:
-            pass
+            # Fallback: simple copy
+            try:
+                dc = int(dump_channel)
+                await last_sent_msg.copy(dc)
+            except Exception:
+                pass
 
     total_elapsed = time.monotonic() - task_start
     uname = f"@{getattr(origin_msg.from_user, 'username', None) or uid}" \

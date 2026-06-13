@@ -55,3 +55,11 @@ WATERMARK = "@NXT_HUB"
 # ── Encoding (FFmpeg) ─────────────────────────────────────────
 ENCODE_DIR      = "/downloads_enc"   # Where encoded files are written
 WATERMARK_FILE  = "bot/encoding/extras/watermark.ass"  # ASS watermark overlay
+
+# ── Dump Channel ───────────────────────────────────────────────
+# Set this to a channel/group ID (negative int) to have the bot
+# automatically forward every leeched file to the channel.
+# The bot must be an admin with "Post Messages" permission there.
+# Leave 0 to disable the dump channel feature.
+DUMP_CHANNEL     = 0             # e.g. -1001234567890
+DUMP_CHANNEL_TAG = True          # Whether to tag the uploader's username in dump

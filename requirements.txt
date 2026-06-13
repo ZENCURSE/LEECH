@@ -1,19 +1,28 @@
 # ── Telegram ──────────────────────────────────────────────────
 pyrofork
 TgCrypto
+pyroblack
 
 # ── Download ──────────────────────────────────────────────────
-yt-dlp
+yt-dlp[default,curl-cffi]
 aiohttp
 aiofiles
+aioshutil
 mega.py
 aria2p
+aioaria2
+aioqbt
+
+# ── Torrent ───────────────────────────────────────────────────
+qbittorrent-api
 
 # ── Media / Encode ────────────────────────────────────────────
 hachoir
 Pillow
 python-magic
 ffmpeg-python
+natsort
+par2cmdline-turbo
 
 # ── Web / HTTP ────────────────────────────────────────────────
 requests
@@ -21,20 +30,38 @@ beautifulsoup4
 lxml
 cloudscraper
 httpx
-curl_cffi        # needed by direct_link_generator (buzzheavier, etc.)
+curl_cffi
 js2py
 pySmartDL
-lk21
 
 # ── Database ──────────────────────────────────────────────────
 motor
+pymongo
 dnspython
 python-dotenv
 
+# ── Web server (for Mega file selector) ──────────────────────
+fastapi
+uvicorn
+gunicorn
+jinja2
+
 # ── Misc ──────────────────────────────────────────────────────
-uvloop
+uvloop==0.21.0
 psutil
 speedtest-cli
+apscheduler
+anytree
+tenacity
+telegraph
+feedparser
+pycountry
+langcodes
+language-data
+xattr
+pytz
+parse-torrent-name
+urllib3
 
 # ── Google Drive (optional) ───────────────────────────────────
 google-api-core
