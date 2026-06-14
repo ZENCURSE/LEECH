@@ -1,40 +1,48 @@
 """
 Resolve any URL to a downloadable form.
+
 Strategy:
-  1. Magnet / .torrent  → handled by aria2
-  2. Known yt-dlp sites → yt-dlp
-  3. Known hosting sites → custom extractor → direct link
-  4. Unknown URL        → HEAD request to sniff Content-Type
-       - text/html      → try yt-dlp (may be a video page)
-       - anything else  → treat as direct file download
+  1. Magnet          → aria2
+  2. Mega.nz         → mega_download
+  3. Telegram link   → tg_downloader
+  4. Known DDL host  → generate_direct_link() → HTTP download
+  5. Known yt-dlp site / M3U8 → yt-dlp
+  6. Unknown URL     → HEAD sniff:
+       HTML          → try yt-dlp
+       binary/media  → direct HTTP download
 """
 import re
-import asyncio
 import asyncio
 import aiohttp
 from urllib.parse import urlparse
 
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"
+UA      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36"
 TIMEOUT = aiohttp.ClientTimeout(total=20, connect=10)
 
-# Sites that yt-dlp handles natively
+# Sites yt-dlp handles natively (video platforms)
 YTDLP_DOMAINS = re.compile(
-    r"(youtube\.com|youtu\.be|streamtape\.|doodstream\.|filelions\."
-    r"|clicknupload\.|streamlare\.|mixdrop\.|vidoza\.|upstream\."
-    r"|voe\.sx|vupload\.|fembed\.|jwplayer\.|dailymotion\.com"
-    r"|vimeo\.com|twitch\.tv|instagram\.com|twitter\.com|x\.com"
-    r"|facebook\.com|tiktok\.com|reddit\.com|streamable\.com)",
+    r"(youtube\.com|youtu\.be"
+    r"|dailymotion\.com|vimeo\.com|twitch\.tv"
+    r"|instagram\.com|twitter\.com|x\.com"
+    r"|facebook\.com|tiktok\.com|reddit\.com"
+    r"|streamable\.com|mixdrop\.|vidoza\."
+    r"|voe\.sx|upstream\.|fembed\.|jwplayer\.)",
+    re.I,
+)
+# Hosting sites that yt-dlp can also rip (fallback after DDL extractor)
+YTDLP_HOST_DOMAINS = re.compile(
+    r"(streamtape\.|doodstream\.|filelions\.|clicknupload\."
+    r"|streamlare\.|vupload\.)",
     re.I,
 )
 M3U8_RE = re.compile(r"\.m3u8(\?|$)", re.I)
 
 
 async def _head(session: aiohttp.ClientSession, url: str) -> dict:
-    """Return {'content_type': str, 'final_url': str}"""
     try:
         async with session.head(
-            url, headers={"User-Agent": UA}, allow_redirects=True,
-            timeout=TIMEOUT,
+            url, headers={"User-Agent": UA},
+            allow_redirects=True, timeout=TIMEOUT,
         ) as r:
             ct = r.headers.get("Content-Type", "").lower()
             return {"content_type": ct, "final_url": str(r.url)}
@@ -42,135 +50,88 @@ async def _head(session: aiohttp.ClientSession, url: str) -> dict:
         return {"content_type": "", "final_url": url}
 
 
-async def _get_html(session: aiohttp.ClientSession, url: str) -> str:
-    try:
-        async with session.get(
-            url, headers={"User-Agent": UA}, allow_redirects=True, timeout=TIMEOUT
-        ) as r:
-            return await r.text(errors="replace")
-    except Exception:
-        return ""
-
-
-# ── Pixeldrain ────────────────────────────────────────────────
-def _pixeldrain(url: str) -> str:
-    m = re.search(r"pixeldrain\.com/[ul]/([a-zA-Z0-9]+)", url)
-    if m:
-        return f"https://pixeldrain.com/api/file/{m.group(1)}?download"
-    return url
-
-
-# ── Hubcloud / Hubdrive ───────────────────────────────────────
-async def _hubcloud(session: aiohttp.ClientSession, url: str) -> str:
-    from bs4 import BeautifulSoup
-    html = await _get_html(session, url)
-    if not html:
-        return url
-    soup = BeautifulSoup(html, "lxml")
-    # Direct file link in anchor
-    for a in soup.find_all("a", href=True):
-        href = a["href"].strip()
-        if re.search(r"\.(mp4|mkv|avi|mov|zip|rar|7z|pdf|apk|exe|iso)", href, re.I):
-            return href
-    # Meta refresh redirect
-    meta = soup.find("meta", attrs={"http-equiv": re.compile("refresh", re.I)})
-    if meta and meta.get("content"):
-        m = re.search(r"url=([^\s;]+)", meta["content"], re.I)
-        if m:
-            return m.group(1).strip("'\"")
-    # JavaScript window.location / href patterns
-    m = re.search(r'(?:location\.href|window\.location)\s*=\s*["\']([^"\']+)["\']', html)
-    if m:
-        return m.group(1)
-    return url
-
-
-# ── GDFlix ────────────────────────────────────────────────────
-async def _gdflix(session: aiohttp.ClientSession, url: str) -> str:
-    from bs4 import BeautifulSoup
-    html = await _get_html(session, url)
-    if not html:
-        return url
-    soup = BeautifulSoup(html, "lxml")
-    for a in soup.find_all("a", href=True):
-        href = a["href"].strip()
-        if "drive.google.com" in href or re.search(r"\.(mp4|mkv|zip|rar)", href, re.I):
-            return href
-    return url
-
-
-# ── Public resolver ───────────────────────────────────────────
 async def resolve(url: str) -> dict:
     """
-    Returns:
-      url        - final URL to use
+    Returns a dict with keys:
+      url        - resolved/final URL
       use_ytdlp  - True → pass to ytdlp_download
-      is_torrent - True → local .torrent path / remote .torrent URL
+      is_torrent - True → .torrent URL
       is_magnet  - True → magnet URI
+      is_tg      - True → Telegram message link
+      is_mega    - True → Mega.nz link
+      is_jdleech - True → use JDownloader (manual opt-in only)
     """
     url = url.strip()
 
-    # Magnet
+    # ── 1. Magnet ────────────────────────────────────────────
     if url.lower().startswith("magnet:?"):
         return _r(url, magnet=True)
 
-    # Telegram message link
+    # ── 2. .torrent file URL ──────────────────────────────────
+    if urlparse(url).path.lower().endswith(".torrent"):
+        return _r(url, torrent=True)
+
+    # ── 3. Telegram message link ──────────────────────────────
     if re.search(r"https?://t\.me/", url, re.I):
         return _r(url, tg=True)
 
-    # Mega.nz link
-    if re.search(r"mega\.nz/", url, re.I):
+    # ── 4. Mega.nz ───────────────────────────────────────────
+    if re.search(r"mega\.nz/|mega\.co\.nz/", url, re.I):
         return _r(url, mega=True)
 
-    # Known DDL hosting sites — resolve via JDLeech extractors
-    try:
-        from bot.utils.direct_link_generator import generate_direct_link, is_supported
-        if is_supported(url):
-            return _r(url, jdleech=True)
-    except Exception:
-        pass  # Fall through to yt-dlp
-
-    # .torrent file URL
-    parsed_path = urlparse(url).path.lower()
-    if parsed_path.endswith(".torrent"):
-        return _r(url, torrent=True)
-
-    # M3U8 stream
+    # ── 5. M3U8 stream ───────────────────────────────────────
     if M3U8_RE.search(url):
         return _r(url, ytdlp=True)
 
-    # Known yt-dlp sites
+    # ── 6. Known yt-dlp video platforms ──────────────────────
     if YTDLP_DOMAINS.search(url):
         return _r(url, ytdlp=True)
 
-    # Known hosting extractors
+    # ── 7. Known DDL hosting sites → resolve direct link ─────
+    #  generate_direct_link() is sync (uses requests internally), run in executor
+    try:
+        from bot.utils.direct_link_generator import generate_direct_link, is_supported
+        if is_supported(url):
+            loop   = asyncio.get_event_loop()
+            direct = await loop.run_in_executor(None, generate_direct_link, url)
+            if direct and isinstance(direct, str) and direct != url:
+                # If the resolved URL is itself a yt-dlp domain, send there
+                if YTDLP_DOMAINS.search(direct) or YTDLP_HOST_DOMAINS.search(direct):
+                    return _r(direct, ytdlp=True)
+                # Otherwise HTTP download the direct link
+                return _r(direct)
+    except Exception:
+        pass  # extractor failed → fall through to yt-dlp / sniff
+
+    # ── 8. Hosting sites yt-dlp can also handle as fallback ──
+    if YTDLP_HOST_DOMAINS.search(url):
+        return _r(url, ytdlp=True)
+
+    # ── 9. Unknown URL — sniff Content-Type ──────────────────
     async with aiohttp.ClientSession() as session:
-        if "pixeldrain.com" in url:
-            return _r(_pixeldrain(url))
-
-        if re.search(r"hubcloud\.|hubdrive\.", url, re.I):
-            resolved = await _hubcloud(session, url)
-            return _r(resolved)
-
-        if re.search(r"gdflix\.", url, re.I):
-            resolved = await _gdflix(session, url)
-            return _r(resolved)
-
-        # Unknown URL — sniff content type
         info = await _head(session, url)
         ct   = info["content_type"]
         fu   = info["final_url"]
 
-        # If it's HTML → could be a video page, try yt-dlp
         if "text/html" in ct:
+            # Could be a video page — try yt-dlp
             return _r(fu, ytdlp=True)
 
-        # Binary / octet-stream / video / audio / application → direct download
+        # Binary / media / application → direct download
         return _r(fu)
 
 
-def _r(url, ytdlp=False, torrent=False, magnet=False, tg=False, mega=False, jdleech=False) -> dict:
-    return {"url": url, "use_ytdlp": ytdlp, "is_torrent": torrent, "is_magnet": magnet, "is_tg": tg, "is_mega": mega, "is_jdleech": jdleech}
+def _r(url, ytdlp=False, torrent=False, magnet=False,
+       tg=False, mega=False, jdleech=False) -> dict:
+    return {
+        "url":        url,
+        "use_ytdlp":  ytdlp,
+        "is_torrent": torrent,
+        "is_magnet":  magnet,
+        "is_tg":      tg,
+        "is_mega":    mega,
+        "is_jdleech": jdleech,
+    }
 
-# Alias for backward compatibility
+# Backward-compat alias
 get_direct_link = resolve

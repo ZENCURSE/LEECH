@@ -31,7 +31,7 @@ from bot.utils.media_utils import (
 )
 from bot.database import users_db
 
-CHUNK          = 512 * 1024
+CHUNK          = 4 * 1024 * 1024           # 4 MB — fast read/write for large file splits
 _2GB           = 2 * 1024 * 1024 * 1024   # 2 GB — standard Telegram limit
 _4GB           = 4 * 1024 * 1024 * 1024   # 4 GB — Premium session limit
 
@@ -49,24 +49,41 @@ _INFO_TOKENS = frozenset({"size", "language", "time", "quality", "codec", "audio
 _TOKEN_RE    = re.compile(r"\{(\w+)\}")
 
 
-async def _split_file(path, part_size):
+async def _split_file(path: str, part_size: int) -> list[str]:
+    """Split file into numbered parts. Removes the original after all parts are written."""
     total = os.path.getsize(path)
-    n     = math.ceil(total / part_size)
+    if total == 0:
+        raise ValueError(f"Cannot split empty file: {path}")
+    n    = math.ceil(total / part_size)
     base, ext = os.path.splitext(path)
-    # Use .partNN.ext so Telegram doesn't reject unknown extensions
-    # but also store as .bin to force document mode (avoids size-limit on media)
-    parts = []
+    parts: list[str] = []
+
     async with aiofiles.open(path, "rb") as src:
         for i in range(n):
-            # Always upload split parts as documents (.bin avoids video size checks)
             pp   = f"{base}.part{i+1:02d}{ext}"
             left = part_size
+            written = 0
             async with aiofiles.open(pp, "wb") as dst:
                 while left > 0:
                     chunk = await src.read(min(CHUNK, left))
-                    if not chunk: break
-                    await dst.write(chunk); left -= len(chunk)
+                    if not chunk:
+                        break
+                    await dst.write(chunk)
+                    left    -= len(chunk)
+                    written += len(chunk)
+            if written == 0:
+                # Empty tail part — remove and stop
+                try: os.remove(pp)
+                except Exception: pass
+                break
             parts.append(pp)
+
+    # Remove the original so disk isn't holding both the source and all parts
+    try:
+        os.remove(path)
+    except Exception:
+        pass
+
     return parts
 
 
@@ -528,10 +545,8 @@ async def upload_file(client, chat_id: int, file_path: str,
             except Exception: pass
             thumb = None
 
-    if len(parts) > 1:
-        for p in parts:
-            try: os.remove(p)
-            except Exception: pass
+    # Parts were already removed by _split_file after uploading each one
+    # (original was removed by _split_file itself; no extra cleanup needed here)
 
     # ── Dump channel — forward file to owner's/user's dump channel ──
     if dump_channel and last_sent_msg:
