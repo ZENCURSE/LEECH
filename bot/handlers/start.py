@@ -188,7 +188,18 @@ async def cmd_start(client: Client, message: Message):
 
 @Client.on_message(filters.command("start") & filters.group)
 async def cmd_start_group(client: Client, message: Message):
-    await send_start_prompt(client, message)
+    uid = message.from_user.id if message.from_user else None
+    if uid and users_db.has_started(uid):
+        # User already PM-started the bot — show welcome directly
+        await message.reply_text(
+            _welcome(message.from_user),
+            reply_markup=_welcome_kb(),
+            parse_mode=enums.ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+    else:
+        # First time — ask them to start in PM once
+        await send_start_prompt(client, message)
 
 @Client.on_message(filters.command("help") & (filters.private | filters.group))
 async def cmd_help(client: Client, message: Message):
