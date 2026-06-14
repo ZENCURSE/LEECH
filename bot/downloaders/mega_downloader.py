@@ -31,7 +31,15 @@ from time import time
 from aiofiles.os import makedirs, remove, path as aiopath
 from aioshutil import rmtree
 
-from mega import MegaApi, MegaStringList
+try:
+    # MegaApi/MegaStringList come from the compiled MEGA SDK python
+    # bindings (the "megasdk" package), NOT from the mega.py package
+    # in requirements.txt. They aren't installed by this Dockerfile,
+    # so guard the import to avoid crashing the whole bot at startup.
+    from mega import MegaApi, MegaStringList
+except ImportError:  # pragma: no cover - megasdk bindings not installed
+    MegaApi = None
+    MegaStringList = None
 
 try:
     # Mega SDK >= 4.x; omitted in some patched builds.
