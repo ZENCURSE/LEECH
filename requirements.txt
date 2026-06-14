@@ -4,17 +4,19 @@ TgCrypto
 pyroblack
 
 # ── Download ──────────────────────────────────────────────────
-yt-dlp[default,curl-cffi]
+yt-dlp[default,curl-cffi]>=2026.06.09
 aiohttp
 aiofiles
 aioshutil
-mega.py
+mega.py>=1.0.8
 aria2p
 aioaria2
 aioqbt
 
 # ── Torrent ───────────────────────────────────────────────────
 qbittorrent-api
+torrent-parser
+bencodepy
 
 # ── Media / Encode ────────────────────────────────────────────
 hachoir

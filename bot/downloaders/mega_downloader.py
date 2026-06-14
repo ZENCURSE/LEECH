@@ -489,11 +489,15 @@ async def add_mega_download(listener, path):
                 )
                 return
 
-            buttons = mega_selection_buttons(mega_gid)
-            await send_message(
-                listener.message,
-                "Your Mega folder is ready. Choose files then press Done Selecting to start downloading.",
-                buttons,
+            from bot.handlers.mega_picker import build_picker_text, build_picker_kb
+            state["selected_ids"] = set()
+            state["page"] = 0
+            _text = build_picker_text(gid, file_nodes, set())
+            _kb   = build_picker_kb(gid, file_nodes, set(), 0)
+            await listener.message.reply_text(
+                _text, reply_markup=_kb,
+                parse_mode="html",
+                disable_web_page_preview=True,
             )
             listener.size = await sync_to_async(folder_api.getSize, node)
             async with task_dict_lock:
