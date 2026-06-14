@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ title }} — NXT HUB</title>
+<style>
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --card: #22263a;
+    --accent: #5b8df6; --accent2: #7c6af7;
+    --text: #e8eaf0; --sub: #8892a4; --border: #2e3348;
+    --green: #3ecf8e; --red: #f56565; --yellow: #f6ad55;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; min-height: 100vh; }
+
+  /* ── Header ── */
+  .header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 18px 24px; display: flex; align-items: center; gap: 14px; position: sticky; top: 0; z-index: 100; }
+  .logo { font-size: 22px; font-weight: 700; background: linear-gradient(135deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .header-sub { color: var(--sub); font-size: 13px; }
+
+  /* ── Stats bar ── */
+  .stats { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; gap: 24px; flex-wrap: wrap; font-size: 13px; }
+  .stat { display: flex; gap: 6px; align-items: center; }
+  .stat-val { font-weight: 600; color: var(--text); }
+  .stat-label { color: var(--sub); }
+  #sel-stat { color: var(--accent); }
+  #sel-size  { color: var(--green); }
+
+  /* ── Toolbar ── */
+  .toolbar { padding: 16px 24px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; background: var(--bg); border-bottom: 1px solid var(--border); position: sticky; top: 61px; z-index: 99; }
+  .search-box { flex: 1; min-width: 220px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 9px 14px 9px 36px; color: var(--text); font-size: 14px; outline: none; position: relative; }
+  .search-wrap { position: relative; flex: 1; min-width: 220px; }
+  .search-wrap::before { content: "🔍"; position: absolute; left: 11px; top: 50%; transform: translateY(-50%); font-size: 14px; pointer-events: none; }
+  .search-box:focus { border-color: var(--accent); }
+  .btn { padding: 9px 16px; border-radius: var(--radius); border: none; cursor: pointer; font-size: 13px; font-weight: 600; transition: .15s; white-space: nowrap; }
+  .btn-ghost { background: var(--surface); color: var(--sub); border: 1px solid var(--border); }
+  .btn-ghost:hover { color: var(--text); border-color: var(--accent); }
+  .btn-primary { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; }
+  .btn-primary:hover { opacity: .9; }
+  .btn-danger { background: var(--red); color: #fff; }
+  .btn-danger:hover { opacity: .9; }
+  .sort-select { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 9px 12px; font-size: 13px; outline: none; cursor: pointer; }
+
+  /* ── File list ── */
+  .file-list { padding: 16px 24px; display: flex; flex-direction: column; gap: 4px; }
+  .file-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: var(--radius); border: 1px solid transparent; cursor: pointer; transition: .12s; user-select: none; }
+  .file-item:hover { background: var(--surface); border-color: var(--border); }
+  .file-item.selected { background: rgba(91,141,246,.1); border-color: rgba(91,141,246,.3); }
+  .file-item.hidden { display: none; }
+  .cb { width: 18px; height: 18px; border-radius: 5px; border: 2px solid var(--border); background: var(--surface); flex-shrink: 0; display: flex; align-items: center; justify-content: center; transition: .12s; }
+  .file-item.selected .cb { background: var(--accent); border-color: var(--accent); }
+  .cb-tick { display: none; color: #fff; font-size: 12px; font-weight: 700; }
+  .file-item.selected .cb-tick { display: block; }
+  .file-path { color: var(--sub); font-size: 11px; }
+  .file-name { font-size: 14px; word-break: break-word; }
+  .file-info { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+  .file-size { margin-left: auto; color: var(--sub); font-size: 12px; white-space: nowrap; padding-left: 12px; flex-shrink: 0; }
+  .file-ext { display: inline-block; background: var(--card); color: var(--sub); border-radius: 4px; font-size: 10px; padding: 2px 5px; margin-right: 4px; font-family: monospace; }
+  .no-results { text-align: center; padding: 60px 24px; color: var(--sub); }
+
+  /* ── Dir header ── */
+  .dir-header { font-size: 12px; color: var(--sub); padding: 14px 14px 4px; font-weight: 600; letter-spacing: .5px; text-transform: uppercase; }
+
+  /* ── Bottom action bar ── */
+  .action-bar { position: fixed; bottom: 0; left: 0; right: 0; background: var(--surface); border-top: 1px solid var(--border); padding: 14px 24px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .sel-summary { flex: 1; font-size: 13px; color: var(--sub); }
+  .sel-summary span { color: var(--accent); font-weight: 600; }
+  .spacer { height: 80px; }
+
+  /* ── Toast ── */
+  .toast { position: fixed; top: 20px; right: 20px; background: var(--green); color: #fff; padding: 12px 20px; border-radius: var(--radius); font-weight: 600; font-size: 14px; z-index: 9999; display: none; }
+  .toast.error { background: var(--red); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="logo">🚀 NXT HUB</div>
+    <div class="header-sub">{{ source_type }} File Selector &nbsp;·&nbsp; Session: <code style="font-size:11px">{{ gid }}</code></div>
+  </div>
+</div>
+
+<div class="stats">
+  <div class="stat"><span class="stat-label">Total files:</span> <span class="stat-val">{{ total_files }}</span></div>
+  <div class="stat"><span class="stat-label">Total size:</span>  <span class="stat-val">{{ total_size }}</span></div>
+  <div class="stat"><span class="stat-label">Selected:</span>   <span class="stat-val" id="sel-stat">0 files</span></div>
+  <div class="stat"><span class="stat-label">Selected size:</span><span class="stat-val" id="sel-size">0 B</span></div>
+</div>
+
+<div class="toolbar">
+  <div class="search-wrap">
+    <input class="search-box" id="search" type="text" placeholder="Search files…" autocomplete="off" oninput="filterFiles()">
+  </div>
+  <select class="sort-select" id="sort-mode" onchange="sortFiles()">
+    <option value="name">Sort: Name</option>
+    <option value="size-desc">Sort: Size ↓</option>
+    <option value="size-asc">Sort: Size ↑</option>
+    <option value="ext">Sort: Extension</option>
+  </select>
+  <button class="btn btn-ghost" onclick="selectAll()">☑️ All</button>
+  <button class="btn btn-ghost" onclick="selectNone()">✖️ None</button>
+  <button class="btn btn-ghost" onclick="invertSel()">🔃 Invert</button>
+</div>
+
+<div class="file-list" id="file-list">
+  <!-- populated by JS -->
+</div>
+
+<div class="no-results" id="no-results" style="display:none">No files match your search.</div>
+<div class="spacer"></div>
+
+<div class="action-bar">
+  <div class="sel-summary">
+    <span id="bottom-sel">0</span> files selected &nbsp;·&nbsp; <span id="bottom-size">0 B</span>
+  </div>
+  <button class="btn btn-ghost" onclick="window.close()">✖ Cancel</button>
+  <button class="btn btn-primary" onclick="confirmDownload()">✅ Start Download</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const GID      = {{ gid | tojson }};
+const CONFIRM  = {{ confirm_url | tojson }};
+const RAW      = {{ files | tojson }};
+
+// sizes as numbers for sorting
+const FILES = RAW.map(f => ({ ...f, size_n: f.size || 0 }));
+
+// selected set
+const selected = new Set({{ preselected | tojson }});
+
+let rendered = [...FILES];
+
+function humanSize(b) {
+  const u = ['B','KB','MB','GB','TB'];
+  let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return b.toFixed(i ? 2 : 0) + ' ' + u[i];
+}
+
+function extOf(name) {
+  const m = name.match(/\.([^.]+)$/);
+  return m ? m[1].toLowerCase() : '';
+}
+
+function render() {
+  const list = document.getElementById('file-list');
+  list.innerHTML = '';
+  let lastDir = null;
+
+  if (rendered.length === 0) {
+    document.getElementById('no-results').style.display = 'block';
+    updateStats(); return;
+  }
+  document.getElementById('no-results').style.display = 'none';
+
+  rendered.forEach((f, i) => {
+    const dir = f.path || '/';
+    if (dir !== lastDir) {
+      if (dir !== '/') {
+        const dh = document.createElement('div');
+        dh.className = 'dir-header';
+        dh.textContent = '📁 ' + dir;
+        list.appendChild(dh);
+      }
+      lastDir = dir;
+    }
+
+    const item = document.createElement('div');
+    item.className = 'file-item' + (selected.has(f.id) ? ' selected' : '');
+    item.dataset.idx = i;
+    item.innerHTML = `
+      <div class="cb"><span class="cb-tick">✓</span></div>
+      <div class="file-info">
+        <div class="file-name">
+          <span class="file-ext">${extOf(f.name) || '?'}</span>${f.name}
+        </div>
+        ${dir !== '/' ? '' : ''}
+      </div>
+      <div class="file-size">${humanSize(f.size_n)}</div>`;
+    item.addEventListener('click', () => toggleFile(f.id, item));
+    list.appendChild(item);
+  });
+  updateStats();
+}
+
+function toggleFile(id, el) {
+  if (selected.has(id)) { selected.delete(id); el.classList.remove('selected'); }
+  else                   { selected.add(id);    el.classList.add('selected'); }
+  updateStats();
+}
+
+function updateStats() {
+  const sel   = [...selected];
+  const total = FILES.filter(f => sel.includes(f.id)).reduce((s, f) => s + f.size_n, 0);
+  document.getElementById('sel-stat').textContent   = sel.length + ' files';
+  document.getElementById('sel-size').textContent   = humanSize(total);
+  document.getElementById('bottom-sel').textContent  = sel.length;
+  document.getElementById('bottom-size').textContent = humanSize(total);
+}
+
+function selectAll()  { FILES.forEach(f => selected.add(f.id));    render(); }
+function selectNone() { selected.clear();                           render(); }
+function invertSel()  { FILES.forEach(f => selected.has(f.id) ? selected.delete(f.id) : selected.add(f.id)); render(); }
+
+function filterFiles() {
+  const q = document.getElementById('search').value.toLowerCase();
+  rendered = q ? FILES.filter(f => f.name.toLowerCase().includes(q) || (f.path||'').toLowerCase().includes(q)) : [...FILES];
+  sortFiles(false);
+}
+
+function sortFiles(doRender = true) {
+  const mode = document.getElementById('sort-mode').value;
+  rendered.sort((a, b) => {
+    if (mode === 'size-desc') return b.size_n - a.size_n;
+    if (mode === 'size-asc')  return a.size_n - b.size_n;
+    if (mode === 'ext')       return extOf(a.name).localeCompare(extOf(b.name)) || a.name.localeCompare(b.name);
+    return a.name.localeCompare(b.name);
+  });
+  if (doRender) render();
+}
+
+function showToast(msg, isError) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = 'toast' + (isError ? ' error' : '');
+  t.style.display = 'block';
+  setTimeout(() => t.style.display = 'none', 3500);
+}
+
+async function confirmDownload() {
+  if (selected.size === 0) { showToast('Select at least one file first.', true); return; }
+  try {
+    const res = await fetch(CONFIRM, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selected_ids: [...selected] }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast('✅ Download started! You can close this window.');
+      document.querySelector('.btn-primary').disabled = true;
+      document.querySelector('.btn-primary').textContent = '✅ Started';
+    } else {
+      showToast('Error: ' + (data.error || 'Unknown'), true);
+    }
+  } catch (e) {
+    showToast('Network error: ' + e, true);
+  }
+}
+
+// Init
+rendered = [...FILES];
+render();
+</script>
+</body>
+</html>

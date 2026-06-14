@@ -342,6 +342,35 @@ def _ensure_sweeper_running():
         LOGGER.error(f"Mega: could not start selection sweeper: {e}")
 
 
+
+# ── NXTL-local helpers (replaces NEO-WZML bot_utils) ──────────
+
+import re as _re
+import asyncio as _asyncio
+import functools as _functools
+import config as _nxtl_config
+
+def get_mega_link_type(link: str) -> str:
+    """Return 'file' or 'folder'."""
+    if "/folder/" in link or "#F!" in link:
+        return "folder"
+    return "file"
+
+def get_valid_base_url() -> str:
+    """Return BASE_URL if configured, else empty string."""
+    url = getattr(_nxtl_config, "BASE_URL", "").strip()
+    if url and url.startswith(("http://", "https://")):
+        return url
+    return ""
+
+async def sync_to_async(func, *args, **kwargs):
+    """Run a blocking function in the default thread executor."""
+    loop = _asyncio.get_event_loop()
+    if kwargs:
+        func = _functools.partial(func, *args, **kwargs)
+        return await loop.run_in_executor(None, func)
+    return await loop.run_in_executor(None, func, *args)
+
 async def add_mega_download(listener, path):
     if not Config.MEGA_ENABLED:
         await listener.on_download_error("Mega.nz downloads are currently disabled by the bot owner.")
@@ -489,15 +518,20 @@ async def add_mega_download(listener, path):
                 )
                 return
 
-            from bot.handlers.mega_picker import build_picker_text, build_picker_kb
-            state["selected_ids"] = set()
-            state["page"] = 0
-            _text = build_picker_text(gid, file_nodes, set())
-            _kb   = build_picker_kb(gid, file_nodes, set(), 0)
+            from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            import config as _cfg
+            _base = (_cfg.BASE_URL or "").rstrip("/")
+            _url  = f"{_base}/mega-select/{gid}"
+            _kb   = InlineKeyboardMarkup([[
+                InlineKeyboardButton("📂 Select Files", url=_url)
+            ]])
             await listener.message.reply_text(
-                _text, reply_markup=_kb,
+                f"📂 <b>Mega Folder Ready</b>\n\n"
+                f"Tap the button to open the file picker.\n"
+                f"Select the files you want, then click <b>Start Download</b>.\n\n"
+                f"<i>Session expires in 30 minutes.</i>",
+                reply_markup=_kb,
                 parse_mode="html",
-                disable_web_page_preview=True,
             )
             listener.size = await sync_to_async(folder_api.getSize, node)
             async with task_dict_lock:
