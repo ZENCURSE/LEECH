@@ -40,30 +40,33 @@ except ImportError:  # pragma: no cover - depends on SDK build flags
     MegaCancelToken = None
 
 from bot import LOGGER, task_dict, task_dict_lock
-from bot.core.config_manager import Config
-from bot.helper.ext_utils.bot_utils import get_mega_link_type, get_valid_base_url
-from bot.helper.ext_utils.bot_utils import sync_to_async
+import config
+class Config:
+    MEGA_EMAIL = getattr(config,"MEGA_EMAIL","")
+    MEGA_PASSWORD = getattr(config,"MEGA_PASSWORD","")
+# from bot.helper.ext_utils.bot_utils import get_mega_link_type, get_valid_base_url
+# from bot.helper.ext_utils.bot_utils import sync_to_async
 
-from bot.helper.ext_utils.task_manager import (
-    check_running_tasks,
-    stop_duplicate_check,
-    limit_checker,
-)
-from bot.helper.ext_utils.files_utils import check_storage_threshold
-from bot.helper.ext_utils.status_utils import get_readable_file_size
-from bot.helper.mirror_leech_utils.status_utils.mega_status import MegaDownloadStatus
-from bot.helper.mirror_leech_utils.status_utils.queue_status import QueueStatus
-from bot.helper.telegram_helper.message_utils import (
-    send_status_message,
-    send_message,
-)
-from bot.helper.listeners.mega_listener import (
-    MegaAppListener,
-    MegaFolderListener,
-    AsyncMega,
-    friendly_mega_error,
-)
-from bot.helper.ext_utils.bot_utils import mega_selection_buttons
+# from bot.helper.ext_utils.task_manager import (
+#     check_running_tasks,
+#     stop_duplicate_check,
+#     limit_checker,
+# )
+# from bot.helper.ext_utils.files_utils import check_storage_threshold
+# from bot.helper.ext_utils.status_utils import get_readable_file_size
+# from bot.helper.mirror_leech_utils.status_utils.mega_status import MegaDownloadStatus
+# from bot.helper.mirror_leech_utils.status_utils.queue_status import QueueStatus
+# from bot.helper.telegram_helper.message_utils import (
+#     send_status_message,
+#     send_message,
+# )
+# from bot.helper.listeners.mega_listener import (
+#     MegaAppListener,
+#     MegaFolderListener,
+#     AsyncMega,
+#     friendly_mega_error,
+# )
+# from bot.helper.ext_utils.bot_utils import mega_selection_buttons
 from web.mega_selection_store import (
     write_state as _store_write,
     read_state as _store_read,

@@ -16,11 +16,18 @@ from urllib3.util.retry import Retry
 from uuid import uuid4
 from base64 import b64decode, b64encode
 
-from bot.core.config_manager import Config
-from bot.helper.ext_utils.exceptions import DirectDownloadLinkException
-from bot.helper.ext_utils.help_messages import PASSWORD_ERROR_MESSAGE
-from bot.helper.ext_utils.links_utils import is_share_link
-from bot.helper.ext_utils.status_utils import speed_string_to_bytes
+import config as _cfg
+class Config:
+    DEBRID_LINK_API = getattr(_cfg,"DEBRID_LINK_API","")
+    DISABLE_MEGA = getattr(_cfg,"DISABLE_MEGA",False)
+class DirectDownloadLinkException(Exception): pass
+PASSWORD_ERROR_MESSAGE = "This link requires a password."
+def is_share_link(url): return False
+def speed_string_to_bytes(s):
+    try:
+        p=s.strip().split(); v=float(p[0]); u=p[1].upper() if len(p)>1 else "B"
+        return int(v*{"B":1,"KB":1024,"MB":1024**2,"GB":1024**3}.get(u.rstrip("/S"),1))
+    except: return 0
 
 user_agent = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0"

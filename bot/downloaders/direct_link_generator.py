@@ -32,8 +32,7 @@ def generate_direct_link(url: str):
     """
     # Try the comprehensive NEO-WZML extractor first
     try:
-        from bot.downloaders.direct_link_generator_neo import direct_link_generator
-        from bot.helper.ext_utils.exceptions import DirectDownloadLinkException
+        from bot.downloaders.direct_link_generator_neo import direct_link_generator, DirectDownloadLinkException
         result = direct_link_generator(url)
         if result:
             return result
