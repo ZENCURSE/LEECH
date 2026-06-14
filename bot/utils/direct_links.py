@@ -171,3 +171,6 @@ async def resolve(url: str) -> dict:
 
 def _r(url, ytdlp=False, torrent=False, magnet=False, tg=False, mega=False, jdleech=False) -> dict:
     return {"url": url, "use_ytdlp": ytdlp, "is_torrent": torrent, "is_magnet": magnet, "is_tg": tg, "is_mega": mega, "is_jdleech": jdleech}
+
+# Alias for backward compatibility
+get_direct_link = resolve
