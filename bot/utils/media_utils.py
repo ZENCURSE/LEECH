@@ -163,3 +163,24 @@ def _hq_resize_thumb(src: str, dest: str, max_w: int = 1280, max_h: int = 720) -
         return dest
     except Exception:
         return src   # return original if PIL fails
+
+
+# ── get_streams — ffprobe all stream info (added from NEO-WZML) ──
+import json as _json
+from asyncio import create_subprocess_exec as _cse
+from asyncio.subprocess import PIPE as _PIPE
+
+async def get_streams(file_path: str):
+    """Return list of stream dicts from ffprobe, or None on error."""
+    cmd = [
+        "ffprobe", "-hide_banner", "-loglevel", "error",
+        "-print_format", "json", "-show_streams", file_path,
+    ]
+    proc = await _cse(*cmd, stdout=_PIPE, stderr=_PIPE)
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        return None
+    try:
+        return _json.loads(stdout)["streams"]
+    except (KeyError, Exception):
+        return None
