@@ -67,8 +67,8 @@ DUMP_CHANNEL_TAG = True          # Whether to tag the uploader's username in dum
 # ── Web Selection UI ──────────────────────────────────────────
 # Put your VPS IP below. That's all you need to change.
 # Example: BASE_URL = "http://123.456.789.0:8080"
-BASE_URL     = ""          # ← PASTE YOUR VPS IP HERE
-WEB_PORT     = 8080        # Port for the FastAPI web server
+BASE_URL     = "http://143.198.222.137"          # ← PASTE YOUR VPS IP HERE
+WEB_PORT     = 8081        # Port for the FastAPI web server
 
 # ── qBittorrent ────────────────────────────────────────────────
 QBT_HOST     = "localhost"
