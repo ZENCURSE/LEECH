@@ -24,8 +24,6 @@ from bot.downloaders.aria2_downloader import (
     torrent_pause,
     torrent_resume,
     torrent_remove,
-    _aria2_add_uri,
-    _aria2_add_torrent,
 )
 from bot.downloaders.mega_downloader import mega_download
 from bot.downloaders.jd_downloader import jdleech_download
@@ -42,8 +40,6 @@ __all__ = [
     "torrent_pause",
     "torrent_resume",
     "torrent_remove",
-    "_aria2_add_uri",
-    "_aria2_add_torrent",
     "mega_download",
     "jdleech_download",
     "telegram_download",

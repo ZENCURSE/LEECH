@@ -1,0 +1,75 @@
+# ── Telegram ──────────────────────────────────────────────────
+pyrofork
+TgCrypto
+pyroblack
+
+# ── Download ──────────────────────────────────────────────────
+yt-dlp[default,curl-cffi]>=2026.06.09
+aiohttp
+aiofiles
+aioshutil
+mega.py>=1.0.8
+aria2p
+aioaria2
+aioqbt
+
+# ── Torrent ───────────────────────────────────────────────────
+qbittorrent-api
+torrent-parser
+bencodepy
+
+# ── Media / Encode ────────────────────────────────────────────
+hachoir
+Pillow
+python-magic
+ffmpeg-python
+natsort
+par2cmdline-turbo
+
+# ── Web / HTTP ────────────────────────────────────────────────
+requests
+beautifulsoup4
+lxml
+cloudscraper
+httpx
+curl_cffi
+js2py
+pySmartDL
+
+# ── Database ──────────────────────────────────────────────────
+motor
+pymongo
+dnspython
+python-dotenv
+
+# ── Web server (for Mega file selector) ──────────────────────
+fastapi
+uvicorn
+gunicorn
+jinja2
+
+# ── Misc ──────────────────────────────────────────────────────
+uvloop==0.21.0
+psutil
+speedtest-cli
+apscheduler
+anytree
+tenacity>=5.1.5,<6.0.0
+telegraph
+feedparser
+pycountry
+langcodes
+language-data
+xattr
+pytz
+parse-torrent-name
+urllib3
+
+# ── Google Drive (optional) ───────────────────────────────────
+google-api-core
+google-auth
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+oauth2client<4.0.0
+httplib2==0.18.0
