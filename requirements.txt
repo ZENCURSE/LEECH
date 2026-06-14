@@ -54,7 +54,7 @@ psutil
 speedtest-cli
 apscheduler
 anytree
-tenacity
+tenacity>=8.2.3,<8.4.0
 telegraph
 feedparser
 pycountry
