@@ -1,10 +1,23 @@
 import platform
 import psutil
 import time
+import logging
+from asyncio import Lock as AsyncLock
 from pyrogram import Client, enums
 import config
 
 _start_time = time.time()
+
+# Setup logger
+LOGGER = logging.getLogger("NXTL_BOT")
+LOGGER.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+LOGGER.addHandler(handler)
+
+# Task tracking
+task_dict = {}
+task_dict_lock = AsyncLock()
 
 # Build session list - bot always present; user session if provided
 app = Client(
