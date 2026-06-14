@@ -65,10 +65,9 @@ DUMP_CHANNEL     = -1004429190957             # e.g. -1001234567890
 DUMP_CHANNEL_TAG = True          # Whether to tag the uploader's username in dump
 
 # ── Web Selection UI ──────────────────────────────────────────
-# Public URL where the bot's web server is reachable.
-# Required for Mega folder file selection and torrent file selection.
-# Example: "https://yourdomain.com" or "http://YOUR_VPS_IP:8080"
-BASE_URL     = ""          # Leave blank to disable web file selection
+# Put your VPS IP below. That's all you need to change.
+# Example: BASE_URL = "http://123.456.789.0:8080"
+BASE_URL     = ""          # ← PASTE YOUR VPS IP HERE
 WEB_PORT     = 8080        # Port for the FastAPI web server
 
 # ── qBittorrent ────────────────────────────────────────────────

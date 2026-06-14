@@ -16,6 +16,17 @@ os.makedirs("data/thumbs", exist_ok=True)
 os.makedirs("data/cookies", exist_ok=True)
 
 
+def _start_web_server():
+    """Start the FastAPI file-selection web server in a background thread."""
+    if not getattr(config, "BASE_URL", "").strip():
+        return   # BASE_URL not set — web selection disabled
+    import threading
+    from web.app import run_web_server
+    t = threading.Thread(target=run_web_server, daemon=True, name="web-selector")
+    t.start()
+    print(f"[web] File selector running on port {getattr(config, 'WEB_PORT', 8080)}")
+
+
 def _start_aria2():
     cmd = [
         "aria2c",
@@ -45,6 +56,7 @@ def _start_aria2():
 
 async def main():
     _start_aria2()
+    _start_web_server()
     await asyncio.sleep(1)
 
     from bot import app, user_app, send_startup_log
