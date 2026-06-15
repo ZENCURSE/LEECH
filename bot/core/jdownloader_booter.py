@@ -1,30 +1,39 @@
 """
 JDownloader Booter — NXTL
 Connects to MyJDownloader.org using email+password from config.
-Uses the myjd library (bundled in /myjd/).
+Uses the official 'myjdapi' PyPI package.
+
+Only JD_EMAIL and JD_PASS are required. JD_DEVICE is optional — if left
+blank, the first device linked to the MyJDownloader account is used
+automatically (same behaviour as other WZML-based bots).
 """
 import asyncio
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from myjd.myjdapi import Myjdapi
+try:
+    import myjdapi
+except ImportError:  # pragma: no cover - dependency missing
+    myjdapi = None
+
 from bot import LOGGER
 import config
 
 
 class JDownloaderClient:
     def __init__(self):
-        self._api        = Myjdapi()
-        self.device      = None
+        self._api         = None
+        self.device       = None
         self.is_connected = False
-        self.error       = "Not connected yet"
+        self.error        = "Not connected yet"
 
     async def connect(self):
-        email    = getattr(config, "JD_EMAIL", "").strip()
-        password = getattr(config, "JD_PASS", "") or getattr(config, "JD_PASSWORD", "")
-        password = (password or "").strip()
-        device   = getattr(config, "JD_DEVICE", "").strip()
+        if myjdapi is None:
+            self.error = "myjdapi package is not installed (pip install myjdapi)"
+            LOGGER.warning(f"[JD] {self.error}")
+            return False
+
+        email    = (getattr(config, "JD_EMAIL", "") or "").strip()
+        password = (getattr(config, "JD_PASS", "") or getattr(config, "JD_PASSWORD", "") or "").strip()
+        device   = (getattr(config, "JD_DEVICE", "") or "").strip()
 
         if not email or not password:
             self.error = "JD_EMAIL / JD_PASS not set in config"
@@ -45,20 +54,30 @@ class JDownloaderClient:
             return False
 
     def _do_connect(self, email, password, device):
-        self._api.set_app_key("NXTHUB")
-        self._api.connect(email, password)
-        self._api.update_devices()
-        devices = self._api.list_devices()
+        api = myjdapi.Myjdapi()
+        api.set_app_key("NXTHUB")
+        api.connect(email, password)
+        api.update_devices()
+        devices = api.list_devices()
+
         if not devices:
-            raise RuntimeError("No JDownloader devices found. Make sure JDownloader is running.")
-        # Pick named device or first available
+            raise RuntimeError(
+                "No JDownloader devices found on this MyJDownloader account. "
+                "Make sure JDownloader is running and signed in with the same "
+                "email/password."
+            )
+
         if device:
             d = next((x for x in devices if x.get("name", "").lower() == device.lower()), None)
             if not d:
-                raise RuntimeError(f"Device '{device}' not found. Available: {[x.get('name') for x in devices]}")
+                raise RuntimeError(
+                    f"Device '{device}' not found. Available: {[x.get('name') for x in devices]}"
+                )
         else:
             d = devices[0]
-        self.device = self._api.get_device(d["name"])
+
+        self._api   = api
+        self.device = api.get_device(d["name"])
         LOGGER.info(f"[JD] Using device: {d['name']}")
 
     async def reconnect(self):
