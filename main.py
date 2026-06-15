@@ -96,6 +96,7 @@ async def main():
             BotCommand("settings", "⚙️ Personal leech settings"),
             BotCommand("help",     "📖 Full command reference"),
             BotCommand("about",    "ℹ️ About this bot"),
+            BotCommand("setthumb", "🖼 Re-upload video with HD thumbnail"),
             BotCommand("mi",       "📊 MediaInfo for a file or URL"),
             BotCommand("speedtest","⚡ Network speed test"),
             BotCommand("shell",    "🖥 Run shell command (owners only)"),

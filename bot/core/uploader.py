@@ -255,32 +255,11 @@ async def _get_thumb_dims(thumb_path: str) -> tuple[int, int]:
 
 def _prep_thumb(thumb_path: str) -> str | None:
     """
-    Ensure thumbnail is:
-    - JPEG format
-    - Quality 95, subsampling=0 (4:4:4 chroma — no colour smearing)
-    - Max 1280x720 (never upscale)
-    Returns path to processed thumb, or None.
-    Telegram MTProto (pyrofork) accepts larger than 320px — the 320px
-    limit only applies to the HTTP Bot API. Via MTProto, Telegram stores
-    and serves the full image as-is.
+    Delegate to hd_thumb.prep_thumb — ensures JPEG 1280×720 ≤ 200 KB.
+    Uses progressive compression so Telegram always accepts the thumb.
     """
-    if not thumb_path or not os.path.isfile(thumb_path):
-        return None
-    try:
-        from PIL import Image
-        with Image.open(thumb_path) as img:
-            rgb = img.convert("RGB")
-            w, h = rgb.size
-            # Cap at 1280x720 keeping aspect, never upscale
-            scale = min(1280 / w, 720 / h, 1.0)
-            if scale < 1.0:
-                rgb = rgb.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-            # Save to temp file alongside original
-            out = thumb_path.rsplit(".", 1)[0] + "_hd.jpg"
-            rgb.save(out, "JPEG", quality=95, subsampling=0, optimize=True)
-            return out
-    except Exception:
-        return thumb_path
+    from bot.utils.hd_thumb import prep_thumb
+    return prep_thumb(thumb_path)
 
 
 # ── Send helpers ──────────────────────────────────────────────
