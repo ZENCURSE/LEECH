@@ -1,7 +1,11 @@
 """
 yt-dlp Downloader — NXTL
-Handles YouTube, M3U8, and 1000+ sites.
-Chrome impersonation: tries chrome-131 → 124 → 120 → no impersonation.
+Handles YouTube, M3U8/HLS, and 1000+ sites.
+
+Fixes:
+  - M3U8/HLS: dedicated format selector + ffmpeg concat downloader
+  - Cookies: only applied for sites that actually need them
+  - Chrome impersonation: tries 131 → 124 → 120 → generic → none
 """
 import os
 import asyncio
@@ -16,7 +20,19 @@ UA = (
     "Chrome/131.0.0.0 Safari/537.36"
 )
 
-# Ordered list of Chrome targets to try (newest → oldest → None)
+# Sites that NEED cookies for age-restricted or login-gated content
+_COOKIE_SITES = re.compile(
+    r"(youtube\.com|youtu\.be"
+    r"|instagram\.com|twitter\.com|x\.com"
+    r"|facebook\.com|tiktok\.com"
+    r"|bilibili\.com|niconico\.jp"
+    r"|crunchyroll\.com|netflix\.com"
+    r"|primevideo\.com|disneyplus\.com)",
+    0,
+)
+
+import re   # needed by _COOKIE_SITES — import at module level
+
 _IMPERSONATE_TARGETS = [
     ("chrome", "131", "windows"),
     ("chrome", "124", "windows"),
@@ -24,23 +40,37 @@ _IMPERSONATE_TARGETS = [
     ("chrome", None,  None),
 ]
 
-
 def _get_impersonate():
-    """
-    Return the best available ImpersonateTarget, or None if curl_cffi missing.
-    Tries targets in order and returns the first one that constructs without error.
-    """
     try:
         from yt_dlp.networking.impersonate import ImpersonateTarget
         for client, version, os_ in _IMPERSONATE_TARGETS:
             try:
-                t = ImpersonateTarget(client=client, version=version, os=os_)
-                return t
+                return ImpersonateTarget(client=client, version=version, os=os_)
             except Exception:
                 continue
     except ImportError:
         pass
     return None
+
+def _needs_cookies(url: str) -> bool:
+    return bool(_COOKIE_SITES.search(url))
+
+def _get_cookies_path(uid: int, url: str) -> str | None:
+    """Return cookie file path only if the site needs it AND the user has one."""
+    if not uid or not _needs_cookies(url):
+        return None
+    try:
+        from bot.database import users_db
+        s = users_db.get_settings(uid)
+        cp = s.get("cookies_path")
+        if cp and os.path.exists(cp):
+            return cp
+    except Exception:
+        pass
+    return None
+
+def _is_m3u8(url: str) -> bool:
+    return bool(re.search(r"\.m3u8(\?|$)|/hls/|/m3u8/|playlist\.m3u8", url, re.I))
 
 
 async def ytdlp_download(
@@ -52,18 +82,18 @@ async def ytdlp_download(
 ) -> str:
     import yt_dlp
     from bot.core import task_manager as tm
-    from bot.utils.progress import downloading_card, task_kb
+    from bot.utils.progress import build_progress_card, safe_edit
 
     os.makedirs(dest_dir, exist_ok=True)
-    kb       = task_kb(task_id)
     loop     = asyncio.get_running_loop()
     out_path = [None]
     err_ref  = [None]
     last_upd = [0.0]
     started  = time.time()
+    is_hls   = _is_m3u8(url)
+    cookies  = _get_cookies_path(uid, url)
 
-    outtmpl = os.path.join(dest_dir, "%(title).200B.%(ext)s")
-    is_m3u8 = ".m3u8" in url.lower() or "m3u8" in url.lower()
+    outtmpl = os.path.join(dest_dir, "%(title).180B.%(ext)s")
 
     def _hook(d: dict):
         if tm.is_cancelled(task_id):
@@ -80,59 +110,70 @@ async def ytdlp_download(
             eta   = d.get("eta") or 0.0
             fname = os.path.basename(d.get("filename") or "") or "Downloading…"
 
-            tm.update_progress(
-                task_id, name=fname,
-                done=done, total=total,
-                speed=speed, eta=eta,
-                status="downloading",
-            )
+            tm.update_progress(task_id, name=fname, done=done, total=total,
+                               speed=speed, eta=eta, status="downloading")
 
             now = time.monotonic()
             if now - last_upd[0] >= UPDATE_SEC:
                 last_upd[0] = now
+                pct = (done / total * 100) if total else 0
                 asyncio.run_coroutine_threadsafe(
-                    _safe_edit(msg,
-                        downloading_card(fname, done, total, speed, eta, task_id, started),
-                        kb),
+                    safe_edit(
+                        msg,
+                        build_progress_card(
+                            "downloading", fname, pct,
+                            done=done, total=total,
+                            speed=speed, eta=eta,
+                            elapsed=time.time() - started,
+                            tid=task_id,
+                        ),
+                    ),
                     loop,
                 )
 
-    def _base_opts() -> dict:
-        opts = {
-            "outtmpl":           {"default": outtmpl},
-            "format": (
+    def _build_opts(impersonate=None) -> dict:
+        if is_hls:
+            fmt = "bestvideo+bestaudio/best"
+            merge_fmt = "mkv"
+        else:
+            fmt = (
                 "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]"
                 "/bestvideo[ext=mp4]+bestaudio"
                 "/bestvideo+bestaudio"
                 "/best[ext=mp4]/best"
-            ) if not is_m3u8 else "best",
-            "merge_output_format":       "mp4" if not is_m3u8 else "mkv",
-            "writethumbnail":            False,
-            "writesubtitles":            False,
-            "writeautomaticsub":         False,
-            "noprogress":                True,
-            "overwrites":                True,
-            "trim_file_name":            200,
-            "fragment_retries":          15,
-            "retries":                   15,
-            "file_access_retries":       5,
-            "extractor_retries":         5,
-            "socket_timeout":            30,
-            "progress_hooks":            [_hook],
-            "quiet":                     True,
-            "no_warnings":               True,
-            "noplaylist":                True,
+            )
+            merge_fmt = "mp4"
+
+        opts: dict = {
+            "outtmpl":                    {"default": outtmpl},
+            "format":                     fmt,
+            "merge_output_format":        merge_fmt,
+            "writethumbnail":             False,
+            "writesubtitles":             False,
+            "writeautomaticsub":          False,
+            "noprogress":                 True,
+            "overwrites":                 True,
+            "trim_file_name":             180,
+            "fragment_retries":           15,
+            "retries":                    15,
+            "file_access_retries":        5,
+            "extractor_retries":          5,
+            "socket_timeout":             30,
+            "progress_hooks":             [_hook],
+            "quiet":                      True,
+            "no_warnings":                True,
+            "noplaylist":                 True,
             "concurrent_fragment_downloads": 4,
+            "source_address":             "0.0.0.0",
             "http_headers": {
                 "User-Agent":         UA,
                 "Accept-Language":    "en-US,en;q=0.9",
-                "Accept":             "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept":             "*/*",
                 "Sec-Fetch-Mode":     "navigate",
-                "Sec-Ch-Ua":          '"Chromium";v="131", "Google Chrome";v="131", "Not-A.Brand";v="99"',
+                "Sec-Ch-Ua":          '"Chromium";v="131","Google Chrome";v="131"',
                 "Sec-Ch-Ua-Mobile":   "?0",
                 "Sec-Ch-Ua-Platform": '"Windows"',
             },
-            "source_address": "0.0.0.0",
             "retry_sleep_functions": {
                 "http":        lambda n: min(3 * n, 15),
                 "fragment":    lambda n: min(3 * n, 15),
@@ -145,30 +186,29 @@ async def ytdlp_download(
                 "add_chapters": True,
             }],
         }
+
+        # HLS-specific: use ffmpeg as the downloader for better stream support
+        if is_hls:
+            opts["external_downloader"] = "ffmpeg"
+            opts["external_downloader_args"] = {
+                "ffmpeg_i": [
+                    "-reconnect", "1",
+                    "-reconnect_streamed", "1",
+                    "-reconnect_delay_max", "30",
+                ],
+            }
+            # Allow geo-blocked HLS
+            opts["geo_bypass"] = True
+
+        if cookies:
+            opts["cookiefile"] = cookies
+
+        if impersonate is not None:
+            opts["impersonate"] = impersonate
+
         return opts
 
-    # Per-user cookies
-    if uid:
-        try:
-            from bot.database import users_db as _udb
-            s  = _udb.get_settings(uid)
-            cp = s.get("cookies_path")
-            if cp and os.path.exists(cp):
-                _base_opts.__defaults__ = None  # will be applied below
-        except Exception:
-            pass
-
-    def _apply_cookies(opts: dict):
-        if uid:
-            try:
-                from bot.database import users_db as _udb
-                s  = _udb.get_settings(uid)
-                cp = s.get("cookies_path")
-                if cp and os.path.exists(cp):
-                    opts["cookiefile"] = cp
-            except Exception:
-                pass
-        return opts
+    ydl_ref = [None]
 
     def _resolve_path(info) -> str | None:
         if not info:
@@ -182,9 +222,7 @@ async def ytdlp_download(
             return final
         return out_path[0]
 
-    ydl_ref = [None]
-
-    def _run_with_opts(opts: dict):
+    def _run_once(opts: dict):
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl_ref[0] = ydl
             info = ydl.extract_info(url, download=True)
@@ -193,26 +231,21 @@ async def ytdlp_download(
                 out_path[0] = path
 
     def _run():
-        # Attempt 1: with Chrome impersonation
-        imp = _get_impersonate()
-        opts = _apply_cookies(_base_opts())
-        if imp is not None:
-            opts["impersonate"] = imp
-
+        imp  = _get_impersonate()
+        opts = _build_opts(imp)
         try:
-            _run_with_opts(opts)
+            _run_once(opts)
             return
         except yt_dlp.utils.DownloadCancelled:
             return
         except Exception as e:
             err1 = str(e).lower()
-            # If impersonation caused the error, retry without it
+            # Retry without impersonation if it was the cause
             if imp is not None and any(
-                kw in err1 for kw in ("impersonate", "curl_cffi", "unsupported target", "no such target")
+                kw in err1 for kw in ("impersonate", "curl_cffi", "unsupported", "no such target")
             ):
-                opts2 = _apply_cookies(_base_opts())   # no impersonate key
                 try:
-                    _run_with_opts(opts2)
+                    _run_once(_build_opts(None))
                     return
                 except yt_dlp.utils.DownloadCancelled:
                     return
@@ -230,7 +263,7 @@ async def ytdlp_download(
     if err_ref[0]:
         raise RuntimeError(f"yt-dlp: {err_ref[0]}") from err_ref[0]
 
-    # Final path resolution from disk if hook missed it
+    # Fallback path resolution from disk
     if not out_path[0] or not os.path.exists(out_path[0]):
         files = [
             os.path.join(dest_dir, f)
@@ -244,10 +277,3 @@ async def ytdlp_download(
         raise FileNotFoundError(f"yt-dlp produced no output in {dest_dir}")
 
     return out_path[0]
-
-
-async def _safe_edit(msg, text, kb):
-    try:
-        await msg.edit_text(text, reply_markup=kb, parse_mode="html")
-    except Exception:
-        pass

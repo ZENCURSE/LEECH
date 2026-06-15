@@ -8,7 +8,7 @@ yt-dlp[default,curl-cffi]>=2026.06.09
 aiohttp
 aiofiles
 aioshutil
-mega.py>=1.0.8
+# mega.py removed — broken on Python 3.12 (asyncio.coroutine removed)
 aria2p
 aioaria2
 aioqbt

@@ -35,7 +35,7 @@ YTDLP_HOST_DOMAINS = re.compile(
     r"|streamlare\.|vupload\.)",
     re.I,
 )
-M3U8_RE = re.compile(r"\.m3u8(\?|$)", re.I)
+M3U8_RE = re.compile(r"\.m3u8(\?|$)|/hls/|/m3u8/|playlist\.m3u8|index\.m3u8|chunklist\.m3u8|master\.m3u8", re.I)
 
 
 async def _head(session: aiohttp.ClientSession, url: str) -> dict:
