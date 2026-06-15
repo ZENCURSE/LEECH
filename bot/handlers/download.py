@@ -11,10 +11,8 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, 
 import config
 from bot.core import task_manager as tm
 from bot.core.downloader import (
-    http_download, ytdlp_download, torrent_download, jdleech_download,
-    torrent_get_files, torrent_set_selected, torrent_resume, torrent_remove,
-    torrent_get_real_gid, torrent_pause,
-    _aria2_add_uri, _aria2_add_torrent,
+    http_download, ytdlp_download, jd_download, qbt_download,
+    telegram_download, generate_direct_link,
 )
 from bot.core.uploader import upload_file
 from bot.core.extractor import extract, make_zip, SUPPORTED_EXTRACT
@@ -106,7 +104,7 @@ async def _run_jdleech(client, message, url, tid, dest_dir, uid, is_group):
     start = time.monotonic()
     try:
         os.makedirs(dest_dir, exist_ok=True)
-        path = await jdleech_download(url, dest_dir, tid, msg)
+        path = await jd_download(url, dest_dir, tid, msg, uid)
         paths = [path] if isinstance(path, str) and os.path.isfile(path) else \
                 [os.path.join(path, f) for f in os.listdir(path)] if os.path.isdir(path) else []
 
@@ -531,7 +529,9 @@ async def _run_start(client: Client, message: Message, url: str, action: str,
         os.makedirs(dest_dir, exist_ok=True)
 
         if info["is_magnet"] or info["is_torrent"]:
-            await _handle_torrent(client, message, msg, info, dest_dir, tid, uid, action, start, is_group)
+            from bot.downloaders.qbt_downloader import qbt_download
+            path = await qbt_download(info["url"], dest_dir, tid, msg, uid)
+            await _post_download(client, message, msg, [path], dest_dir, tid, uid, action, start, is_group)
             return
 
         if info.get("is_tg"):
@@ -540,13 +540,13 @@ async def _run_start(client: Client, message: Message, url: str, action: str,
             path = await download_tg_link(info["url"], dest_dir, tid, msg)
 
         elif info.get("is_mega"):
-            await _edit(msg, tid, "🌐 Connecting to Mega.nz...", uid, is_group)
-            from bot.core.mega_download import mega_download
-            path = await mega_download(info["url"], dest_dir, tid, msg)
+            # Mega removed — route via yt-dlp fallback
+            await _edit(msg, tid, "⬇️ Fetching via yt-dlp...", uid, is_group)
+            path = await ytdlp_download(info["url"], dest_dir, tid, msg, uid)
 
         elif info.get("is_jdleech"):
             await _edit(msg, tid, "🔗 Resolving via JDLeech...", uid, is_group)
-            path = await jdleech_download(info["url"], dest_dir, tid, msg)
+            path = await jd_download(info["url"], dest_dir, tid, msg, uid)
 
         elif info["use_ytdlp"]:
             await _edit(msg, tid, "⬇️ Fetching via yt-dlp...", uid, is_group)

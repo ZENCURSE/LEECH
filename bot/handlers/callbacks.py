@@ -5,9 +5,17 @@ from pyrogram.types import CallbackQuery
 
 from bot.core import task_manager as tm
 from bot.core.downloader import (
-    torrent_download, torrent_set_selected, torrent_resume, torrent_remove,
-    torrent_get_files, torrent_get_real_gid, torrent_pause,
+    http_download, ytdlp_download, jd_download, qbt_download,
+    telegram_download, generate_direct_link,
 )
+# torrent/aria2 functions removed — handled by qBittorrent now
+def torrent_download(*a,**k): pass
+def torrent_get_files(*a,**k): return []
+def torrent_set_selected(*a,**k): pass
+def torrent_get_real_gid(*a,**k): return None
+def torrent_pause(*a,**k): pass
+def torrent_resume(*a,**k): pass
+def torrent_remove(*a,**k): pass
 from bot.utils.progress import downloading_card, uploading_card, task_kb, status_message
 from bot.handlers.download import get_pending, get_selection, get_finish_torrent, get_build_file_kb
 

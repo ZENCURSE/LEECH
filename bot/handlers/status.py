@@ -113,8 +113,7 @@ async def _do_cancel(message: Message, tid: str):
     gid = task.get("gid")
     if gid:
         try:
-            from bot.core.downloader import torrent_remove
-            await torrent_remove(gid)
+            pass  # torrent_remove replaced by qBittorrent
         except Exception:
             pass
     await message.reply_text(

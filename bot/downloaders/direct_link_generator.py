@@ -14,8 +14,6 @@ Usage:
     # Returns: str (direct URL), tuple (url, header), or dict (folder contents)
 """
 
-from bot.utils.direct_links import get_direct_link as _nxtl_direct
-
 
 def generate_direct_link(url: str):
     """

@@ -436,7 +436,9 @@ async def upload_file(client, chat_id: int, file_path: str,
     if tm.is_cancelled(task_id):
         return
 
-    thumb      = await _resolve_thumb(uid, orig_stem, tmp_dir)
+    # HD thumbnail — 4-tier: custom → TMDB → Fanart → ffmpeg frame → title card
+    from bot.utils.hd_thumb import generate_hd_thumb
+    thumb = await generate_hd_thumb(file_path, uid=uid)
     kb         = task_kb(task_id)
     task_start = time.monotonic()
 

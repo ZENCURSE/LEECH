@@ -1,57 +1,21 @@
 """
-Download core — NXTL (Refactored)
-
-This module now acts as a unified entry point that re-exports from the
-separate downloader modules in bot/downloaders/.
-
-Each protocol has its own file for easy maintenance:
-  - http_downloader.py    — HTTP/HTTPS streaming
-  - ytdlp_downloader.py  — yt-dlp (YouTube, M3U8, 1000+ sites)
-  - aria2_downloader.py  — Aria2 JSON-RPC (torrent/magnet)
-  - mega_downloader.py   — Mega.nz
-  - jd_downloader.py     — Multi-host direct link (JDLeech)
-  - telegram_downloader.py — Telegram media
-  - direct_link_generator.py — URL resolver (NEO-WZML + NXTL)
+bot/core/downloader.py — unified re-export hub for all download backends.
+Mega and aria2-torrent removed. Torrent now handled by qBittorrent.
 """
 
-from bot.downloaders.http_downloader import http_download
-from bot.downloaders.ytdlp_downloader import ytdlp_download
-from bot.downloaders.aria2_downloader import (
-    torrent_download,
-    torrent_get_files,
-    torrent_set_selected,
-    torrent_get_real_gid,
-    torrent_pause,
-    torrent_resume,
-    torrent_remove,
-    _aria2_add_uri,
-    _aria2_add_torrent,
-    _aria2_tell_status,
-    _aria2_name,
-    _aria2_rpc,
-)
-from bot.downloaders.mega_downloader import mega_download
-from bot.downloaders.jd_downloader import jdleech_download
+from bot.downloaders.http_downloader    import http_download
+from bot.downloaders.ytdlp_downloader   import ytdlp_download
+from bot.downloaders.jd_downloader      import jd_download
+from bot.downloaders.qbt_downloader     import qbt_download
 from bot.downloaders.telegram_downloader import telegram_download
-from bot.downloaders.direct_link_generator import generate_direct_link
+from bot.downloaders.direct_link_generator import generate_direct_link, is_supported
 
 __all__ = [
     "http_download",
     "ytdlp_download",
-    "torrent_download",
-    "torrent_get_files",
-    "torrent_set_selected",
-    "torrent_get_real_gid",
-    "torrent_pause",
-    "torrent_resume",
-    "torrent_remove",
-    "_aria2_add_uri",
-    "_aria2_add_torrent",
-    "_aria2_tell_status",
-    "_aria2_name",
-    "_aria2_rpc",
-    "mega_download",
-    "jdleech_download",
+    "jd_download",
+    "qbt_download",
     "telegram_download",
     "generate_direct_link",
+    "is_supported",
 ]

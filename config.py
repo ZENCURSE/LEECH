@@ -20,6 +20,11 @@ AUTHORIZED_CHATS = [-1003882018027,-1003876799341]           # e.g. [123456789, 
 MONGO_URI = "mongodb+srv://pankajameher2:pankajameher2@cluster0.zoczhsw.mongodb.net/?appName=Cluster0"
 MONGO_DB  = "nxthub"
 
+# ── JDownloader (MyJDownloader.org) ──────────────────────────────────
+JD_EMAIL    = ""   # your MyJDownloader account email
+JD_PASS     = ""   # your MyJDownloader account password
+JD_DEVICE   = ""   # device name (blank = first available)
+
 # --------- Mega ------------------------
 MEGA_EMAIL = "vikekil325@aspensif.com"
 MEGA_PASSWORD = "Rajangarg@234"

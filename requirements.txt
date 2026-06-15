@@ -73,3 +73,4 @@ google-auth-httplib2
 google-auth-oauthlib
 oauth2client<4.0.0
 httplib2==0.18.0
+pycryptodome>=3.19.0
