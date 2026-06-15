@@ -652,74 +652,15 @@ async def _post_download(client, message, msg, paths, dest_dir, tid, uid, action
         await _refresh_group_card(uid)
 
 
-# ── Torrent ───────────────────────────────────────────────────
+# ── Torrent (now handled by qBittorrent — see qbt_downloader.py) ────────────
 
 async def _handle_torrent(client, message, msg, info, dest_dir, tid, uid, action, start, is_group):
-    is_magnet = info["is_magnet"]
-    src       = info["url"]
-    opts      = {"dir": dest_dir, "pause": "true", "seed-time": "0"}
-
-    if info["is_torrent"]:
-        await _edit(msg, tid, "⬇️ Downloading .torrent file...", uid, is_group)
-        src = await http_download(info["url"], dest_dir, tid, msg)
-
-    await _edit(msg, tid, "🧲 Connecting to aria2...", uid, is_group)
-
-    try:
-        gid = await _aria2_add_uri(src, opts) if is_magnet else await _aria2_add_torrent(src, opts)
-    except Exception as e:
-        raise RuntimeError(f"aria2 add failed: {e}") from e
-
-    tm.set_gid(tid, gid)
-    await _edit(msg, tid, "📡 Fetching torrent metadata...", uid, is_group)
-
-    files = []
-    for _ in range(30):
-        await asyncio.sleep(1)
-        if tm.is_cancelled(tid):
-            await torrent_remove(gid)
-            raise asyncio.CancelledError
-        files = await torrent_get_files(gid)
-        if files:
-            break
-
-    if not files:
-        await torrent_resume(gid)
-        paths = await torrent_download(src, dest_dir, tid, msg, is_magnet, existing_gid=gid)
-        await _finish_torrent(client, message, msg, paths, dest_dir, tid, uid, action, start, is_group)
-        return
-
-    _pending[gid] = {
-        "tid": tid, "uid": uid, "msg": msg, "dest_dir": dest_dir,
-        "is_magnet": is_magnet, "src": src, "action": action,
-        "start": start, "message": message, "gid": gid, "is_group": is_group,
-    }
-    _selection[gid] = set(f["index"] for f in files)
-
-    picker_text = (
-        f"🗂 <b>Select files to download</b>\n"
-        f"🆔 <code>{tid}</code>  📦 {len(files)} file(s)"
-    )
-    picker_kb = _build_file_kb(gid, files)
-
-    if is_group:
-        # In a group the shared card (msg) must stay as the group card.
-        # Send the file picker directly to the user's PM instead.
-        from bot import app as bot_app
-        picker_msg = await bot_app.send_message(
-            uid,
-            picker_text,
-            reply_markup=picker_kb,
-            parse_mode=enums.ParseMode.HTML,
-        )
-        # Update pending so the finish flow uses the PM picker message
-        _pending[gid]["msg"] = picker_msg
-    else:
-        await msg.edit_text(
-            picker_text,
-            reply_markup=picker_kb,
-            parse_mode=enums.ParseMode.HTML,
-        )
+    """Route torrent/magnet to qBittorrent downloader."""
+    from bot.downloaders.qbt_downloader import qbt_download
+    url   = info["url"]
+    paths = await qbt_download(url, dest_dir, tid, msg, uid)
+    paths = [paths] if isinstance(paths, str) else paths
+    await _post_download(client, message, msg, paths, dest_dir, tid, uid, action, start, is_group)
 
 
 async def _finish_torrent(client, message, msg, paths, dest_dir, tid, uid, action, start, is_group):
@@ -732,19 +673,16 @@ async def _finish_torrent(client, message, msg, paths, dest_dir, tid, uid, actio
     finally:
         tm.finish_task(tid)
         _cleanup(dest_dir)
-        try:
-            await msg.delete()
-        except Exception:
-            pass
 
 
 def _build_file_kb(gid: str, files: list) -> InlineKeyboardMarkup:
+    """File picker keyboard — kept for compatibility with callbacks."""
     from bot.utils.size_utils import human_size
     sel  = _selection.get(gid, set())
     rows = []
     for f in files[:20]:
-        idx  = f["index"]
-        name = os.path.basename(f["path"]) if f["path"] else f"File {idx}"
+        idx  = f.get("index", 0)
+        name = os.path.basename(f.get("path", "")) or f"File {idx}"
         size = human_size(f.get("size", 0))
         icon = "✅" if idx in sel else "☐"
         rows.append([InlineKeyboardButton(
@@ -756,7 +694,6 @@ def _build_file_kb(gid: str, files: list) -> InlineKeyboardMarkup:
         InlineKeyboardButton("⬇️ Download", callback_data=f"tf_start:{gid}"),
     ])
     return InlineKeyboardMarkup(rows)
-
 
 # ── Helpers ───────────────────────────────────────────────────
 
@@ -821,7 +758,7 @@ async def tf_toggle(client, cb: CallbackQuery):
     else:
         sel.add(idx)
     try:
-        files = await torrent_get_files(gid)
+        files = await None  # removed
         await cb.message.edit_reply_markup(reply_markup=_build_file_kb(gid, files))
     except Exception:
         pass
@@ -835,7 +772,7 @@ async def tf_all(client, cb: CallbackQuery):
         return await cb.answer("Session expired.", show_alert=True)
     if cb.from_user.id != _pending[gid]["uid"]:
         return await cb.answer("Not your task.", show_alert=True)
-    files = await torrent_get_files(gid)
+    files = await None  # removed
     _selection[gid] = set(f["index"] for f in files)
     try:
         await cb.message.edit_reply_markup(reply_markup=_build_file_kb(gid, files))
@@ -851,7 +788,7 @@ async def tf_none(client, cb: CallbackQuery):
         return await cb.answer("Session expired.", show_alert=True)
     if cb.from_user.id != _pending[gid]["uid"]:
         return await cb.answer("Not your task.", show_alert=True)
-    files = await torrent_get_files(gid)
+    files = await None  # removed
     _selection[gid] = set()
     try:
         await cb.message.edit_reply_markup(reply_markup=_build_file_kb(gid, files))
@@ -875,27 +812,14 @@ async def tf_start(client, cb: CallbackQuery):
     await cb.answer("⬇️ Starting download…")
     p     = _pending.pop(gid)
     _selection.pop(gid, None)
-
-    # Apply file selection to aria2
     try:
-        await torrent_set_selected(gid, list(sel))
-        await torrent_resume(gid)
-    except Exception as e:
-        try:
-            await cb.message.edit_text(
-                f"❌ <b>Error starting:</b> <code>{e}</code>",
-                parse_mode=enums.ParseMode.HTML,
-            )
-        except Exception:
-            pass
-        return
+        pass  # qBittorrent handles selection via web UI
+    except Exception:
+        pass
 
     # Continue with actual download
     try:
-        paths = await torrent_download(
-            p["src"], p["dest_dir"], p["tid"], p["msg"],
-            p["is_magnet"], existing_gid=gid,
-        )
+        paths = await None  # removed
         await _finish_torrent(
             client, p["message"], p["msg"], paths,
             p["dest_dir"], p["tid"], p["uid"],

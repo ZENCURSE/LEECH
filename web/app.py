@@ -86,9 +86,8 @@ async def mega_select_confirm(gid: str, payload: SelectionPayload):
 
     # Trigger download on the bot's event loop
     try:
-        from bot.downloaders.mega_downloader import resume_mega_with_selection
         from bot import bot_loop
-        asyncio.run_coroutine_threadsafe(resume_mega_with_selection(gid), bot_loop)
+        pass  # mega removed
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)})
 

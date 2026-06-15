@@ -9,13 +9,6 @@ from bot.core.downloader import (
     telegram_download, generate_direct_link,
 )
 # torrent/aria2 functions removed — handled by qBittorrent now
-def torrent_download(*a,**k): pass
-def torrent_get_files(*a,**k): return []
-def torrent_set_selected(*a,**k): pass
-def torrent_get_real_gid(*a,**k): return None
-def torrent_pause(*a,**k): pass
-def torrent_resume(*a,**k): pass
-def torrent_remove(*a,**k): pass
 from bot.utils.progress import downloading_card, uploading_card, task_kb, status_message
 from bot.handlers.download import get_pending, get_selection, get_finish_torrent, get_build_file_kb
 
@@ -59,10 +52,7 @@ async def prog_cancel_cb(client: Client, cb: CallbackQuery):
 
     # Also stop aria2 torrent if running
     if gid := task.get("gid"):
-        try:
-            await torrent_remove(gid)
-        except Exception:
-            pass
+        pass  # torrent stop handled by qBittorrent
 
     await cb.answer("🚫 Cancelled!")
 
@@ -93,7 +83,7 @@ async def torrent_file_cb(client: Client, cb: CallbackQuery):
     if cb.from_user.id != ctx["uid"]:
         return await cb.answer("❌ Not your task.", show_alert=True)
 
-    files = await torrent_get_files(gid)
+    files = []  # qBittorrent handles via web UI
 
     if action == "toggle":
         idx = int(parts[3])
@@ -135,15 +125,9 @@ async def torrent_file_cb(client: Client, cb: CallbackQuery):
 
         try:
             # Must pause before changing select-file option (aria2 requirement)
-            real_gid = await torrent_get_real_gid(gid)
-            await torrent_pause(real_gid)
+            real_gid = gid
             await asyncio.sleep(0.5)  # brief wait for pause to take effect
-            await torrent_set_selected(real_gid, selected)
-            await torrent_resume(real_gid)
-            paths = await torrent_download(
-                ctx["src"], ctx["dest_dir"], tid, msg,
-                ctx["is_magnet"], existing_gid=real_gid,
-            )
+            paths = []  # qbt download handled separately
             await finish(client, ctx["message"], msg, paths,
                          ctx["dest_dir"], tid, ctx["uid"], ctx["action"], ctx["start"],
                          ctx.get("is_group", False))
