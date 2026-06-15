@@ -22,8 +22,8 @@ MONGO_URI = "mongodb+srv://pankajameher2:pankajameher2@cluster0.zoczhsw.mongodb.
 MONGO_DB  = "nxthub"
 
 # ── JDownloader (MyJDownloader.org) ──────────────────────────────────
-JD_EMAIL    = ""   # your MyJDownloader account email
-JD_PASS     = ""   # your MyJDownloader account password
+JD_EMAIL    = "me.pankaja@gmail.com"   # your MyJDownloader account email
+JD_PASS     = "Jdownloader@24"   # your MyJDownloader account password
 
 # --------- Mega ------------------------
 MEGA_EMAIL = "vikekil325@aspensif.com"
