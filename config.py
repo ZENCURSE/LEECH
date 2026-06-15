@@ -6,7 +6,8 @@
 # ── Telegram ──────────────────────────────────────────────────
 API_ID           = 22574649
 API_HASH         = "e3730dd3cbdf1ac2c80e7b6ed6d06f13"
-BOT_TOKEN        = "8539709524:AAE-IvLSV5pxVO1n91N7Nr2mAv4y1dFoPbI"
+#BOT_TOKEN        = "8539709524:AAE-IvLSV5pxVO1n91N7Nr2mAv4y1dFoPbI"
+BOT_TOKEN        = "8821970852:AAFKsbG3ii1DTSEt9FEAeKLPvDkps5Cp2eY"
 SESSION          = ""           # Pyrogram session string — leave blank for 2 GB limit
                                 # Fill with Premium account session for 4 GB uploads
 OWNER_ID         = 5417874390
