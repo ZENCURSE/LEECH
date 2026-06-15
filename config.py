@@ -23,7 +23,6 @@ MONGO_DB  = "nxthub"
 # ── JDownloader (MyJDownloader.org) ──────────────────────────────────
 JD_EMAIL    = ""   # your MyJDownloader account email
 JD_PASS     = ""   # your MyJDownloader account password
-JD_DEVICE   = ""   # device name (blank = first available)
 
 # --------- Mega ------------------------
 MEGA_EMAIL = "vikekil325@aspensif.com"

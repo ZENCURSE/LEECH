@@ -28,30 +28,28 @@ def _start_web_server():
 
 
 def _start_aria2():
+    """aria2 is used for HTTP direct downloads only. Torrents handled by qBittorrent."""
     cmd = [
         "aria2c",
         "--enable-rpc",
         f"--rpc-listen-port={config.ARIA2_PORT}",
         f"--rpc-secret={config.ARIA2_SECRET}",
-        "--rpc-listen-all=true",
+        "--rpc-listen-all=false",
         "--daemon=true",
         "--log-level=warn",
-        "--max-concurrent-downloads=5",
+        "--max-concurrent-downloads=10",
         "--split=16",
         "--max-connection-per-server=16",
         "--min-split-size=5M",
-        "--seed-time=0",
-        "--follow-torrent=mem",
-        "--bt-enable-lpd=true",
-        "--enable-dht=true",
-        "--enable-peer-exchange=true",
+        "--allow-overwrite=true",
+        "--auto-file-renaming=false",
         f"--dir={config.DOWNLOAD_DIR}",
     ]
     try:
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print("[aria2] Started.")
+        print("[aria2] Started (HTTP downloads only).")
     except FileNotFoundError:
-        print("[aria2] WARNING: aria2c not found — torrent support disabled.")
+        print("[aria2] WARNING: aria2c not found.")
 
 
 async def main():
@@ -64,6 +62,16 @@ async def main():
     await init_db()
 
     await start_health_server()
+
+    # Boot JDownloader if credentials provided
+    jd_email = getattr(config, "JD_EMAIL", "").strip()
+    jd_pass  = getattr(config, "JD_PASS",  "").strip()
+    if jd_email and jd_pass:
+        from bot.core.jdownloader_booter import jdownloader
+        asyncio.create_task(jdownloader.boot())
+        print("[JD] Booting JDownloader…")
+    else:
+        print("[JD] JD_EMAIL/JD_PASS not set — JDownloader disabled.")
 
     async with app:
         if user_app:
@@ -88,6 +96,9 @@ async def main():
             BotCommand("settings", "⚙️ Personal leech settings"),
             BotCommand("help",     "📖 Full command reference"),
             BotCommand("about",    "ℹ️ About this bot"),
+            BotCommand("mi",       "📊 MediaInfo for a file or URL"),
+            BotCommand("speedtest","⚡ Network speed test"),
+            BotCommand("shell",    "🖥 Run shell command (owners only)"),
         ])
 
         print(f"[bot] @{(await app.get_me()).username} is running.")
