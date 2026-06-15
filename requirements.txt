@@ -26,6 +26,9 @@ ffmpeg-python
 natsort
 par2cmdline-turbo
 
+# ── JDownloader (MyJDownloader.org) ──────────────────────────
+myjdapi>=1.1.10
+
 # ── Web / HTTP ────────────────────────────────────────────────
 requests
 beautifulsoup4
