@@ -99,7 +99,12 @@ async def jd_download(
     await safe_edit(msg, _status_card(task_id, f"⬇️ Starting download: {name}"))
     await _run(dev.linkgrabber.move_to_downloadlist, [], pkg_ids)
     await asyncio.sleep(1)
-    await _run(dev.downloads.force_download, [], pkg_ids)
+    try:
+        await _run(dev.downloads.force_download, [], pkg_ids)
+    except AttributeError:
+        # Older/official myjdapi builds don't expose downloads.force_download —
+        # fall back to globally (re)starting the download controller instead.
+        await _run(dev.downloadcontroller.start_downloads)
 
     tm.set_status(task_id, "downloading")
 
@@ -112,8 +117,8 @@ async def jd_download(
         if tm.is_cancelled(task_id):
             try:
                 await _run(dev.downloads.remove_links, [], pkg_ids)
-            except Exception:
-                pass
+            except Exception as e:
+                LOGGER.warning(f"[JD] cleanup on cancel failed: {e}")
             raise asyncio.CancelledError
 
         await asyncio.sleep(4)
