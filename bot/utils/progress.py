@@ -6,10 +6,13 @@ import config
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from bot.utils.size_utils import human_size, human_speed, human_time
 
-# ── Progress bar using block squares ──────────────────────────
+# ── Progress bar  ▰ filled · ▶ cursor · ▱ empty ─────────────
 def bar(pct: float, width: int = 15) -> str:
     filled = int(width * pct / 100)
-    return "⬛" * filled + "⬜" * (width - filled)
+    empty  = width - filled
+    if 0 < filled < width:
+        return "▰" * filled + "▶" + "▱" * (empty - 1)
+    return "▰" * filled + "▱" * empty
 
 # ── Status meta ───────────────────────────────────────────────
 _STYLE = {
@@ -59,7 +62,6 @@ def _total_speed() -> float:
 
 # ══════════════════════════════════════════════════════════════
 #  ACTIVE card  (downloading / uploading)
-#  Box-frame design with full filename + arrow-led stats
 # ══════════════════════════════════════════════════════════════
 def _active_card(status: str, name: str, done: int, total: int,
                  speed: float, eta: float, tid: str,
@@ -76,14 +78,14 @@ def _active_card(status: str, name: str, done: int, total: int,
         f"║  <code>{bar(pct)}</code>  <b>{pct:.1f}%</b>",
         f"║",
         f"╠═「 📊 <b>STATS</b> 」",
-        f"║  ➤ <b>Size</b>   :  {human_size(done)}  /  {human_size(total)}",
-        f"║  ➤ <b>Speed</b>  :  {human_speed(speed)}",
-        f"║  ➤ <b>ETA</b>    :  {human_time(eta)}",
+        f"║  ➤ <b>Size</b>    :  {human_size(done)}  /  {human_size(total)}",
+        f"║  ➤ <b>Speed</b>   :  {human_speed(speed)}",
+        f"║  ➤ <b>ETA</b>     :  {human_time(eta)}",
     ]
     if elapsed > 2:
         lines.append(f"║  ➤ <b>Elapsed</b> :  {human_time(elapsed)}")
     lines += [
-        f"║  ➤ <b>Task</b>   :  <code>#{tid}</code>",
+        f"║  ➤ <b>Task</b>    :  <code>#{tid}</code>",
         f"╚══════════════════════",
         f"  ✖️ Cancel → {cancel_cmd(tid)}",
         f"  <i>{config.WATERMARK}</i>",
@@ -223,7 +225,8 @@ def error_card(tid: str, error) -> str:
 
 
 # ══════════════════════════════════════════════════════════════
-#  TASK BLOCK  —  compact row inside /status & group card
+#  TASK BLOCK  — compact row inside /status & group card
+#  Uses ┌─ │ └─ frame.  No fixed-width box header (emoji breaks alignment).
 # ══════════════════════════════════════════════════════════════
 def _task_block(num: int, tid: str, task: dict) -> str:
     p      = task.get("progress", {})
@@ -238,7 +241,7 @@ def _task_block(num: int, tid: str, task: dict) -> str:
     pct   = (done / total * 100) if total else 0
 
     lines = [
-        f"┌─ <b>{num}.</b> {icon}  <b>{label}</b>",
+        f"┌─ <b>{num}.</b> {icon}  <b>{label}</b>  ·  <code>{tid}</code>",
         f"│",
         f"│  🎬 <b>{name}</b>",
         f"│",
@@ -247,8 +250,10 @@ def _task_block(num: int, tid: str, task: dict) -> str:
     if status in ("downloading", "uploading"):
         lines += [
             f"│  <code>{bar(pct, 12)}</code>  <b>{pct:.0f}%</b>",
-            f"│  ➤ {human_size(done)} / {human_size(total)}",
-            f"│  ➤ ⚡ {human_speed(speed)}  ·  ⏳ {human_time(eta)}",
+            f"│",
+            f"│  ➤ <b>Size</b>   :  {human_size(done)} / {human_size(total)}",
+            f"│  ➤ <b>Speed</b>  :  {human_speed(speed)}",
+            f"│  ➤ <b>ETA</b>    :  {human_time(eta)}",
         ]
     elif status == "queued":
         lines.append(f"│  ➤ 🕐 Waiting in queue…")
@@ -263,7 +268,7 @@ def _task_block(num: int, tid: str, task: dict) -> str:
 
 
 # ══════════════════════════════════════════════════════════════
-#  GROUP card  (shown in the group chat)
+#  GROUP card  (in the group chat where /d was used)
 # ══════════════════════════════════════════════════════════════
 def group_task_card(uid: int, uploading_to_pm: bool = False) -> str:
     from bot.core import task_manager as tm
@@ -271,14 +276,12 @@ def group_task_card(uid: int, uploading_to_pm: bool = False) -> str:
 
     spd = _total_speed()
     header_lines = [
-        f"╔══════════════════════════╗",
-        f"║   🚀  <b>NXT HUB</b>  STATUS      ║",
-        f"╚══════════════════════════╝",
+        f"🚀 <b>NXT HUB</b>  ·  ⚡ <b>{human_speed(spd)}</b>",
         _slots_line(),
-        f"⚡  <b>Total Speed</b>  :  {human_speed(spd)}",
     ]
     if uploading_to_pm:
         header_lines.append("📨 <i>Uploading to your PM…</i>")
+    header_lines.append("─" * 26)
     header = "\n".join(header_lines)
 
     if not tasks:
@@ -294,13 +297,13 @@ def group_task_card(uid: int, uploading_to_pm: bool = False) -> str:
 def status_message(tasks: dict) -> str:
     spd   = _total_speed()
     count = len(tasks)
+    count_str = f"  ·  <b>{count}</b> active" if count else ""
     header = "\n".join([
-        f"╔══════════════════════════╗",
-        f"║   📊  <b>MY TASKS</b>" + (f"  ·  <b>{count}</b> active" if count else "") + "      ║",
-        f"╚══════════════════════════╝",
+        f"📊 <b>MY TASKS</b>{count_str}",
         _slots_line(),
-        f"⚡  <b>Total Speed</b>  :  {human_speed(spd)}",
-        f"",
+        f"⚡ <b>Total Speed</b>  :  {human_speed(spd)}",
+        "─" * 26,
+        "",
     ])
 
     if not tasks:
@@ -308,3 +311,85 @@ def status_message(tasks: dict) -> str:
 
     blocks = [_task_block(i, tid, task) for i, (tid, task) in enumerate(tasks.items(), 1)]
     return header + "\n\n".join(blocks) + f"\n\n<i>{config.WATERMARK}</i>"
+
+
+# ══════════════════════════════════════════════════════════════
+#  SHARED CARD RENDERER — used by download, encode, upload flows
+#  All progress messages across the bot go through this.
+# ══════════════════════════════════════════════════════════════
+
+def build_progress_card(
+    status: str,        # "downloading" | "uploading" | "encoding" | "merging"
+    name: str,
+    pct: float,         # 0–100
+    *,
+    # download/upload stats
+    done: int   = 0,
+    total: int  = 0,
+    speed: float = 0.0,
+    eta: float   = 0.0,
+    # encode-specific
+    enc_speed: float = 0.0,   # ffmpeg speed multiplier
+    elapsed: float   = 0.0,   # seconds
+    tid: str = "",
+) -> str:
+    """
+    Single unified card renderer.
+    Returns HTML string ready to send/edit via Telegram.
+    """
+    import config as _cfg
+
+    icons = {
+        "downloading": ("⬇️",  "DOWNLOADING"),
+        "uploading":   ("📤",  "UPLOADING"),
+        "encoding":    ("⚙️",  "ENCODING"),
+        "merging":     ("🔗",  "MERGING"),
+    }
+    icon, label = icons.get(status, ("⚙️", status.upper()))
+
+    bar_str = bar(pct, 15)
+
+    lines = [
+        f"╔═「 {icon} <b>{label}</b> 」",
+        f"║",
+        f"║  🎬 <b>{name}</b>",
+        f"║",
+        f"║  <code>{bar_str}</code>  <b>{pct:.1f}%</b>",
+        f"║",
+        f"╠═「 📊 <b>STATS</b> 」",
+    ]
+
+    if status in ("downloading", "uploading"):
+        if total:
+            lines.append(f"║  ➤ <b>Size</b>    :  {human_size(done)}  /  {human_size(total)}")
+        if speed:
+            lines.append(f"║  ➤ <b>Speed</b>   :  {human_speed(speed)}")
+        if eta:
+            lines.append(f"║  ➤ <b>ETA</b>     :  {human_time(int(eta))}")
+        if elapsed > 2:
+            lines.append(f"║  ➤ <b>Elapsed</b> :  {human_time(int(elapsed))}")
+
+    elif status in ("encoding", "merging"):
+        if enc_speed:
+            lines.append(f"║  ➤ <b>Speed</b>   :  {enc_speed:.2f}x")
+        if elapsed:
+            lines.append(f"║  ➤ <b>Elapsed</b> :  {human_time(int(elapsed))}")
+        if eta:
+            lines.append(f"║  ➤ <b>ETA</b>     :  {human_time(int(eta))}")
+
+    if tid:
+        lines.append(f"║  ➤ <b>Task</b>    :  <code>#{tid}</code>")
+
+    lines += [
+        f"╚══════════════════════",
+        f"  <i>{_cfg.WATERMARK}</i>",
+    ]
+    return "\n".join(lines)
+
+
+async def safe_edit(msg, text: str, reply_markup=None) -> None:
+    """Edit msg silently — skips MESSAGE_NOT_MODIFIED errors."""
+    try:
+        await msg.edit_text(text, parse_mode="html", reply_markup=reply_markup)
+    except Exception:
+        pass

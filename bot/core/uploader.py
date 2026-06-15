@@ -462,47 +462,35 @@ async def upload_file(client, chat_id: int, file_path: str,
         tm.update_progress(task_id, name=part_name, done=0,
                            total=part_size, speed=0.0, eta=0.0, status="uploading")
 
-        _state = {"last_t": time.monotonic(), "last_b": 0}
-        _SEP   = "━━━━━━━━━━━━━━━━━━━━━━━━"
+        _state   = {"last_t": time.monotonic(), "last_b": 0, "started": time.monotonic()}
+        _upd_sec = getattr(config, "PROGRESS_UPDATE_SEC", 4)
 
         async def _cb(current, total,
                       _pn=part_name, _tid=task_id, _st=_state,
                       _pmsg=progress_msg):
-            now = time.monotonic()
-            dt  = now - _st["last_t"]
-            if dt < config.PROGRESS_UPDATE_SEC: return
-            speed = (current - _st["last_b"]) / dt if dt > 0 else 0.0
-            eta   = (total - current) / speed if speed > 0 else 0.0
-            _st["last_t"] = now; _st["last_b"] = current
+            from bot.utils.progress import build_progress_card, safe_edit
+            now     = time.monotonic()
+            dt      = now - _st["last_t"]
+            if dt < _upd_sec:
+                return
+            speed   = (current - _st["last_b"]) / dt if dt > 0 else 0.0
+            eta     = (total - current) / speed if speed > 0 else 0.0
+            elapsed = now - _st["started"]
+            _st["last_t"] = now
+            _st["last_b"] = current
             tm.update_progress(_tid, name=_pn, done=current,
                                total=total, speed=speed, eta=eta, status="uploading")
-            # For encode flow: edit msg directly (no status loop running)
             if _pmsg:
-                pct    = int(current * 100 / total) if total else 0
-                filled = int(pct / 10)
-                bar    = "█" * filled + "░" * (10 - filled)
-                hspd   = f"{speed/1024/1024:.1f} MB/s" if speed >= 1024*1024 else f"{speed/1024:.1f} KB/s"
-                hsize  = f"{current/1024/1024:.1f} MB" if current >= 1024*1024 else f"{current/1024:.1f} KB"
-                htotal = f"{total/1024/1024:.1f} MB"   if total   >= 1024*1024 else f"{total/1024:.1f} KB"
-                mm, ss = divmod(int(eta), 60)
-                eta_s  = f"{mm}m {ss}s" if mm else f"{ss}s"
-                stem   = (_pn[:36] + "…") if len(_pn) > 38 else _pn
-                try:
-                    await _pmsg.edit_text(
-                        f"<b>{_SEP}</b>\n"
-                        f"<b>📤  UPLOADING</b>\n"
-                        f"<b>{_SEP}</b>\n\n"
-                        f"🎬 <b>{stem}</b>\n\n"
-                        f"<b><code>{bar}</code>  {pct}%</b>\n\n"
-                        f"📦 <b>{hsize}</b> / <b>{htotal}</b>\n"
-                        f"⚡ <b>{hspd}</b>\n"
-                        f"🕐 <b>ETA: {eta_s}</b>\n\n"
-                        f"<b>{_SEP}</b>\n"
-                        f"<b>⚡ {config.WATERMARK}</b>",
-                        parse_mode="html",
-                    )
-                except Exception:
-                    pass
+                pct = (current / total * 100) if total else 0
+                await safe_edit(
+                    _pmsg,
+                    build_progress_card(
+                        "uploading", _pn, pct,
+                        done=current, total=total,
+                        speed=speed, eta=eta, elapsed=elapsed,
+                        tid=_tid,
+                    ),
+                )
 
         # Caption = bold filename + token info block inside <blockquote>
         # The blockquote renders as Telegram's native "quote" style (grey bar on left)

@@ -67,55 +67,29 @@ def _clean_name(fname: str) -> str:
 # ── Download from Telegram with live progress bar ─────────────
 
 async def _dl_tg_with_progress(client, file_id: str, dest: str, msg, label: str) -> str:
-    """
-    Download a Telegram file to dest, showing a live progress bar
-    on msg that updates every 2 seconds.
-    """
-    SEP = "━━━━━━━━━━━━━━━━━━━━━━━━"
+    """Download a Telegram file showing a live card-style progress bar."""
+    from bot.utils.progress import build_progress_card, safe_edit
+
     last_edit  = [0.0]
-    last_bytes = [0]
     start_time = [time.monotonic()]
 
-    def _human_size(b):
-        for u in ("B", "KB", "MB", "GB"):
-            if b < 1024: return f"{b:.1f} {u}"
-            b /= 1024
-        return f"{b:.1f} GB"
-
-    def _human_speed(bps):
-        if bps < 1024:       return f"{bps:.0f} B/s"
-        if bps < 1024**2:    return f"{bps/1024:.1f} KB/s"
-        return f"{bps/1024**2:.1f} MB/s"
-
     async def _progress(current, total):
-        now    = time.monotonic()
-        if now - last_edit[0] < 2.0:
+        now = time.monotonic()
+        if now - last_edit[0] < 3.0:
             return
         elapsed = now - start_time[0]
         speed   = current / max(elapsed, 0.001)
-        eta     = int((total - current) / speed) if speed > 0 and total > current else 0
-        pct     = int(current * 100 / total) if total else 0
-        filled  = int(pct / 10)
-        bar     = "█" * filled + "░" * (10 - filled)
-        mm, ss  = divmod(eta, 60)
-        eta_str = f"{mm}m {ss}s" if mm else f"{ss}s"
-
-        try:
-            await msg.edit_text(
-                f"<b>{SEP}</b>\n"
-                f"<b>📥  {label}</b>\n"
-                f"<b>{SEP}</b>\n\n"
-                f"<b><code>{bar}</code>  {pct}%</b>\n\n"
-                f"📦 <b>{_human_size(current)}</b> / <b>{_human_size(total)}</b>\n"
-                f"⚡ <b>{_human_speed(speed)}</b>\n"
-                f"🕐 <b>ETA: {eta_str}</b>\n\n"
-                f"<b>{SEP}</b>\n"
-                f"<b>⚡ {config.WATERMARK}</b>",
-                parse_mode=enums.ParseMode.HTML,
-            )
-            last_edit[0] = now
-        except Exception:
-            pass
+        eta     = (total - current) / speed if speed > 0 and total > current else 0
+        pct     = (current / total * 100) if total else 0
+        await safe_edit(
+            msg,
+            build_progress_card(
+                "downloading", label, pct,
+                done=current, total=total,
+                speed=speed, eta=eta, elapsed=elapsed,
+            ),
+        )
+        last_edit[0] = now
 
     await client.download_media(file_id, file_name=dest, progress=_progress)
     return dest

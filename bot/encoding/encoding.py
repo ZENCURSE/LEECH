@@ -558,21 +558,13 @@ async def media_info(saved_file_path):
 
 async def handle_progress(proc, msg, message, filepath,
                             progress_file: str, status_file: str):
-    """
-    Poll ffmpeg -progress output and update the Telegram message card.
-    Fixes:
-      - Correct file paths (no broken string concat)
-      - MESSAGE_NOT_MODIFIED guard (skip edit when text unchanged)
-      - Clean NXTL-style progress card with bar, %, ETA, speed, elapsed
-    """
-    import config as _cfg
-    SEP = "━━━━━━━━━━━━━━━━━━━━━━━━"
-    name = os.path.basename(filepath)
-    stem = (name[:36] + "…") if len(name) > 38 else name
-    COMPRESSION_START_TIME = time.time()
-    last_text = ""
+    """Poll ffmpeg -progress and show a unified card-style progress bar."""
+    from bot.utils.progress import build_progress_card, safe_edit
 
-    # Write initial status json
+    name               = os.path.basename(filepath)
+    COMPRESSION_START  = time.time()
+    last_card          = ""
+
     try:
         with open(status_file, 'w') as f:
             json.dump({'running': True, 'pid': proc.pid,
@@ -596,69 +588,31 @@ async def handle_progress(proc, msg, message, filepath,
         speed_list = re.findall(r"speed=(\d+\.?\d*)", text)
         prog_list  = re.findall(r"progress=(\w+)", text)
 
-        if prog_list and prog_list[-1] == "end":
-            # Show encode complete card before upload starts
-            elapsed_enc = time.time() - COMPRESSION_START_TIME
-            em, es = divmod(int(elapsed_enc), 60)
-            eh, em = divmod(em, 60)
-            elapsed_str = f"{eh}h {em}m {es}s" if eh else (f"{em}m {es}s" if em else f"{es}s")
-            try:
-                await msg.edit_text(
-                    f"<b>{SEP}</b>\n"
-                    f"<b>✅  ENCODING COMPLETE</b>\n"
-                    f"<b>{SEP}</b>\n\n"
-                    f"🎬 <b>{stem}</b>\n\n"
-                    f"<b><code>{'█' * 12}</code>  100%</b>\n\n"
-                    f"⏱ <b>Took:</b> {elapsed_str}\n\n"
-                    f"<b>{SEP}</b>\n"
-                    f"<i>📤 Starting upload…</i>",
-                    parse_mode="html",
-                )
-            except Exception:
-                pass
-            break
-
-        elapsed_enc  = time.time() - COMPRESSION_START_TIME
+        elapsed_enc   = time.time() - COMPRESSION_START
         elapsed_media = int(time_in_us[-1]) / 1_000_000 if time_in_us else 0
         speed_val     = float(speed_list[-1]) if speed_list else 0.0
 
-        pct = min(int(elapsed_media * 100 / total_time), 99)
-        filled = int(pct / 10)
-        bar    = "█" * filled + "░" * (10 - filled)
+        if prog_list and prog_list[-1] == "end":
+            # 100% complete — show filled bar then hand off to upload
+            await safe_edit(
+                msg,
+                build_progress_card(
+                    "encoding", name, 100.0,
+                    enc_speed=speed_val, elapsed=elapsed_enc, eta=0,
+                ),
+            )
+            break
 
-        if speed_val > 0:
-            remaining = max(total_time - elapsed_media, 0)
-            eta_secs  = int(remaining / speed_val)
-            mm, ss    = divmod(eta_secs, 60)
-            hh, mm    = divmod(mm, 60)
-            eta_str   = f"{hh}h {mm}m {ss}s" if hh else (f"{mm}m {ss}s" if mm else f"{ss}s")
-        else:
-            eta_str = "—"
+        pct     = min(elapsed_media * 100 / total_time, 99.0)
+        eta_sec = (total_time - elapsed_media) / speed_val if speed_val > 0 else 0
 
-        em, es = divmod(int(elapsed_enc), 60)
-        eh, em = divmod(em, 60)
-        elapsed_str = f"{eh}h {em}m {es}s" if eh else (f"{em}m {es}s" if em else f"{es}s")
-
-        new_text = (
-            f"<b>{SEP}</b>\n"
-            f"<b>⚙️  ENCODING</b>\n"
-            f"<b>{SEP}</b>\n\n"
-            f"🎬 <b>{stem}</b>\n\n"
-            f"<b><code>{bar}</code>  {pct}%</b>\n\n"
-            f"⚡ <b>Speed:</b> {speed_val:.2f}x\n"
-            f"⏱ <b>Elapsed:</b> {elapsed_str}\n"
-            f"🕐 <b>ETA:</b> {eta_str}\n\n"
-            f"<b>{SEP}</b>\n"
-            f"<b>⚡ {_cfg.WATERMARK}</b>"
+        card = build_progress_card(
+            "encoding", name, pct,
+            enc_speed=speed_val, elapsed=elapsed_enc, eta=eta_sec,
         )
-
-        # Skip edit if text unchanged — avoids MESSAGE_NOT_MODIFIED
-        if new_text == last_text:
+        if card == last_card:
             continue
-        last_text = new_text
+        last_card = card
+        await safe_edit(msg, card)
 
-        try:
-            await msg.edit_text(new_text, parse_mode="html")
-        except Exception:
-            pass
 

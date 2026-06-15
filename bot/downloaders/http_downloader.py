@@ -11,7 +11,7 @@ import aiofiles
 import config
 
 from bot.core import task_manager as tm
-from bot.utils.progress import downloading_card, task_kb
+from bot.utils.progress import build_progress_card, task_kb, safe_edit
 
 CHUNK        = 512 * 1024
 UPDATE_SEC   = 4
@@ -46,7 +46,13 @@ def _safe_name(n: str) -> str:
 
 
 async def _safe_edit(msg, text: str, kb) -> None:
-    pass  # status card handles display
+    """Edit progress message. Silently ignores Telegram errors."""
+    if not msg:
+        return
+    try:
+        await msg.edit_text(text, parse_mode="html", reply_markup=kb)
+    except Exception:
+        pass
 
 
 def _rolling_speed(buf: list, now: float, new_bytes: int):
@@ -98,6 +104,16 @@ async def http_download(url: str, dest_dir: str, task_id: str, msg) -> str:
                                        total=total, speed=speed, eta=eta)
                     if now - last_edit >= UPDATE_SEC:
                         last_edit = now
-                        await _safe_edit(msg,
-                            downloading_card(name, done, total, speed, eta, task_id), kb)
+                        pct = (done / total * 100) if total else 0
+                    await safe_edit(
+                        msg,
+                        build_progress_card(
+                            "downloading", name, pct,
+                            done=done, total=total,
+                            speed=speed, eta=eta,
+                            elapsed=time.monotonic() - 0,
+                            tid=task_id,
+                        ),
+                        kb,
+                    )
     return dest
