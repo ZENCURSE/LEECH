@@ -8,6 +8,7 @@ Fixes:
   - Chrome impersonation: tries 131 → 124 → 120 → generic → none
 """
 import os
+import re
 import asyncio
 import time
 import config
