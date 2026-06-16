@@ -1,26 +1,22 @@
 """
 thumb_store.py — Thumbnail storage manager — NXTL
 ==================================================
-Handles all thumbnail persistence:
+Storage layout:
+  data/thumbs/       ← user custom, permanent, 1 file per user
+  data/thumb_cache/  ← auto-fetched TMDB/Fanart, 30-day TTL, 500 MB cap
+  data/thumb_tmp/    ← ephemeral, wiped at startup + after upload
 
-  1. User custom thumbs  (data/thumbs/<uid>.jpg)
-     - One file per user, overwritten on update
-     - MongoDB stores only the path string (no binary)
-     - File deleted when user clears thumb
+Resolution policy
+-----------------
+Pyrogram uses MTProto (not Bot API), so it accepts full-resolution thumbs.
+We store and send at 1280×720 — the native HD resolution for Telegram
+video/document thumbs over MTProto. The 320×320 Bot API limit does NOT apply.
 
-  2. Auto-fetch cache  (data/thumb_cache/<md5>.jpg)
-     - Keyed by md5(title+year) so same film reuses cached result
-     - TTL: 30 days, auto-evicted by _evict_cache()
-     - Max size: 200 MB — oldest files pruned when exceeded
-
-  3. Temp thumbs  (data/thumb_tmp/<uid>_<ts>.jpg)
-     - Used during upload, deleted immediately after send
-
-Storage layout (all under /app/data or DOWNLOAD_DIR/data):
-  data/
-    thumbs/           ← user custom, permanent per-user
-    thumb_cache/      ← auto-fetch cache, 30-day TTL, 200 MB cap
-    thumb_tmp/        ← ephemeral, cleaned at startup + after use
+Only prep_for_upload() is called right before Pyrogram send_video/send_document.
+It ensures the file is:
+  - JPEG
+  - ≤ 200 KB   (Telegram MTProto limit)
+  - 1280×720   (HD, looks great in chat)
 """
 
 import hashlib
@@ -30,13 +26,16 @@ import time
 import config
 from bot import LOGGER
 
-_BASE       = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data")
-THUMB_DIR   = os.path.join(_BASE, "thumbs")        # user custom
-CACHE_DIR   = os.path.join(_BASE, "thumb_cache")   # auto-fetch cache
-TMP_DIR     = os.path.join(_BASE, "thumb_tmp")     # ephemeral
+_BASE      = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data")
+THUMB_DIR  = os.path.join(_BASE, "thumbs")
+CACHE_DIR  = os.path.join(_BASE, "thumb_cache")
+TMP_DIR    = os.path.join(_BASE, "thumb_tmp")
 
-CACHE_TTL   = 30 * 24 * 3600   # 30 days
-CACHE_MAX   = 200 * 1024 * 1024  # 200 MB cap
+CACHE_TTL  = 30 * 24 * 3600    # 30 days
+CACHE_MAX  = 500 * 1024 * 1024  # 500 MB cap (full-res JPEGs ~50–150 KB each)
+
+_W, _H     = 1280, 720          # HD — MTProto supports this
+_MAX_BYTES = 200 * 1024         # 200 KB hard limit
 
 for _d in (THUMB_DIR, CACHE_DIR, TMP_DIR):
     os.makedirs(_d, exist_ok=True)
@@ -45,24 +44,31 @@ for _d in (THUMB_DIR, CACHE_DIR, TMP_DIR):
 # ── User custom thumb ─────────────────────────────────────────
 
 def user_thumb_path(uid: int) -> str:
-    """Permanent path for a user's custom thumbnail."""
     return os.path.join(THUMB_DIR, f"{uid}.jpg")
 
 
 def save_user_thumb(uid: int, src: str) -> str | None:
     """
-    Save user's custom thumbnail.
-    Converts to 320×320 JPEG for storage (small, universal compat).
-    Returns saved path or None on failure.
+    Save user's custom thumbnail at full 1280×720 HD.
+    One file per user — overwritten on each update.
     """
     dest = user_thumb_path(uid)
     try:
         from PIL import Image
-        img = Image.open(src).convert("RGB")
-        img.thumbnail((320, 320), Image.LANCZOS)
-        img.save(dest, "JPEG", quality=90, optimize=True)
+        img    = Image.open(src).convert("RGB")
+        w, h   = img.size
+        # Scale to fit 1280×720 keeping aspect ratio, letterbox with black
+        scale  = min(_W / w, _H / h)
+        nw, nh = int(w * scale), int(h * scale)
+        img    = img.resize((nw, nh), Image.LANCZOS)
+        canvas = Image.new("RGB", (_W, _H), (0, 0, 0))
+        canvas.paste(img, ((_W - nw) // 2, (_H - nh) // 2))
+        for q in (95, 88, 80, 70):
+            canvas.save(dest, "JPEG", quality=q, subsampling=0, optimize=True)
+            if os.path.getsize(dest) <= _MAX_BYTES:
+                break
         size_kb = os.path.getsize(dest) / 1024
-        LOGGER.info(f"[ThumbStore] Saved user thumb uid={uid} ({size_kb:.0f} KB) → {dest}")
+        LOGGER.info(f"[ThumbStore] Saved user thumb uid={uid} ({size_kb:.0f} KB, 1280×720)")
         return dest
     except Exception as e:
         LOGGER.warning(f"[ThumbStore] save_user_thumb failed: {e}")
@@ -70,7 +76,6 @@ def save_user_thumb(uid: int, src: str) -> str | None:
 
 
 def delete_user_thumb(uid: int) -> bool:
-    """Delete a user's stored thumbnail."""
     path = user_thumb_path(uid)
     if os.path.exists(path):
         try:
@@ -78,14 +83,13 @@ def delete_user_thumb(uid: int) -> bool:
             LOGGER.info(f"[ThumbStore] Deleted user thumb uid={uid}")
             return True
         except Exception as e:
-            LOGGER.warning(f"[ThumbStore] delete_user_thumb failed: {e}")
+            LOGGER.warning(f"[ThumbStore] delete_user_thumb: {e}")
     return False
 
 
 def get_user_thumb(uid: int) -> str | None:
-    """Return user's custom thumb path if it exists."""
     path = user_thumb_path(uid)
-    return path if os.path.exists(path) and os.path.getsize(path) > 1000 else None
+    return path if os.path.exists(path) and os.path.getsize(path) > 5000 else None
 
 
 # ── Auto-fetch cache ──────────────────────────────────────────
@@ -100,34 +104,37 @@ def cache_path(title: str, year: str | None) -> str:
 
 
 def cache_get(title: str, year: str | None) -> str | None:
-    """Return cached thumbnail path if valid and not expired."""
     path = cache_path(title, year)
     if not os.path.exists(path):
         return None
-    age = time.time() - os.path.getmtime(path)
-    if age > CACHE_TTL:
-        _rm(path)
-        return None
+    if time.time() - os.path.getmtime(path) > CACHE_TTL:
+        _rm(path); return None
     if os.path.getsize(path) < 5000:
-        _rm(path)
-        return None
+        _rm(path); return None
+    LOGGER.debug(f"[ThumbStore] Cache hit: {title} ({year})")
     return path
 
 
 def cache_put(title: str, year: str | None, src: str) -> str | None:
     """
-    Save a thumbnail to the auto-fetch cache.
-    Stores as 320×320 JPEG — small enough for Telegram, fast to serve.
-    Runs eviction after saving.
+    Cache at full 1280×720 HD — same resolution as what gets sent.
+    Eviction keeps total under 500 MB.
     """
     dest = cache_path(title, year)
     try:
         from PIL import Image
-        img = Image.open(src).convert("RGB")
-        # Keep aspect ratio, fit within 320×320
-        img.thumbnail((320, 320), Image.LANCZOS)
-        img.save(dest, "JPEG", quality=88, optimize=True)
-        LOGGER.debug(f"[ThumbStore] Cached: {title} ({year}) → {os.path.getsize(dest)//1024} KB")
+        img    = Image.open(src).convert("RGB")
+        w, h   = img.size
+        scale  = min(_W / w, _H / h)
+        nw, nh = int(w * scale), int(h * scale)
+        img    = img.resize((nw, nh), Image.LANCZOS)
+        canvas = Image.new("RGB", (_W, _H), (0, 0, 0))
+        canvas.paste(img, ((_W - nw) // 2, (_H - nh) // 2))
+        for q in (95, 88, 80, 70):
+            canvas.save(dest, "JPEG", quality=q, subsampling=0, optimize=True)
+            if os.path.getsize(dest) <= _MAX_BYTES:
+                break
+        LOGGER.debug(f"[ThumbStore] Cached {title} ({year}) → {os.path.getsize(dest)//1024} KB")
         _evict_cache()
         return dest
     except Exception as e:
@@ -136,43 +143,30 @@ def cache_put(title: str, year: str | None, src: str) -> str | None:
 
 
 def _evict_cache():
-    """
-    Remove expired files and enforce 200 MB cap.
-    Called after every cache write — lightweight since most runs do nothing.
-    """
     try:
-        now   = time.time()
-        files = []
-        total = 0
+        now, files, total = time.time(), [], 0
         for fn in os.listdir(CACHE_DIR):
             if not fn.endswith(".jpg"):
                 continue
-            fp   = os.path.join(CACHE_DIR, fn)
-            mtime = os.path.getmtime(fp)
-            size  = os.path.getsize(fp)
-
-            # Remove expired
-            if now - mtime > CACHE_TTL:
-                _rm(fp)
-                continue
-
-            files.append((mtime, size, fp))
-            total += size
-
-        # Enforce size cap — remove oldest first
+            fp = os.path.join(CACHE_DIR, fn)
+            mt = os.path.getmtime(fp)
+            if now - mt > CACHE_TTL:
+                _rm(fp); continue
+            sz = os.path.getsize(fp)
+            files.append((mt, sz, fp))
+            total += sz
         if total > CACHE_MAX:
-            files.sort(key=lambda x: x[0])   # oldest first
-            for mtime, size, fp in files:
+            files.sort(key=lambda x: x[0])
+            for mt, sz, fp in files:
                 _rm(fp)
-                total -= size
-                if total <= CACHE_MAX * 0.8:  # prune to 80% of cap
+                total -= sz
+                if total <= CACHE_MAX * 0.8:
                     break
     except Exception as e:
-        LOGGER.debug(f"[ThumbStore] evict_cache error: {e}")
+        LOGGER.debug(f"[ThumbStore] evict_cache: {e}")
 
 
 def cache_stats() -> dict:
-    """Return cache stats for /status command."""
     try:
         files = [f for f in os.listdir(CACHE_DIR) if f.endswith(".jpg")]
         total = sum(os.path.getsize(os.path.join(CACHE_DIR, f)) for f in files)
@@ -188,44 +182,49 @@ def tmp_path(uid: int) -> str:
 
 
 def cleanup_tmp():
-    """Delete all temp thumbs — called at bot startup."""
     count = 0
     for fn in os.listdir(TMP_DIR):
-        fp = os.path.join(TMP_DIR, fn)
-        _rm(fp)
+        _rm(os.path.join(TMP_DIR, fn))
         count += 1
     if count:
         LOGGER.info(f"[ThumbStore] Cleaned {count} temp thumb(s) at startup")
 
 
-# ── Prep for Telegram upload ──────────────────────────────────
+# ── Prep for Telegram send ────────────────────────────────────
 
 def prep_for_upload(src: str, dest: str | None = None) -> str | None:
     """
-    Convert any image → 320×320 JPEG ≤ 200 KB for Telegram.
-    320×320 works with both Bot API and MTProto.
+    Final step before passing thumb to send_video / send_document.
+    Ensures 1280×720 JPEG ≤ 200 KB — full HD, works on Pyrogram MTProto.
     """
     if not src or not os.path.exists(src):
         return None
-    out = dest or tmp_path(0)
+    out = dest or src.rsplit(".", 1)[0] + "_send.jpg"
     try:
         from PIL import Image
-        img = Image.open(src).convert("RGB")
-        img.thumbnail((320, 320), Image.LANCZOS)
-        for q in (90, 80, 70, 60):
-            img.save(out, "JPEG", quality=q, optimize=True)
-            if os.path.getsize(out) <= 200 * 1024:
+        img    = Image.open(src).convert("RGB")
+        w, h   = img.size
+        # Already 1280×720? Skip resize
+        if w != _W or h != _H:
+            scale  = min(_W / w, _H / h)
+            nw, nh = int(w * scale), int(h * scale)
+            img    = img.resize((nw, nh), Image.LANCZOS)
+            canvas = Image.new("RGB", (_W, _H), (0, 0, 0))
+            canvas.paste(img, ((_W - nw) // 2, (_H - nh) // 2))
+        else:
+            canvas = img
+        for q in (95, 88, 80, 70, 60):
+            canvas.save(out, "JPEG", quality=q, subsampling=0, optimize=True)
+            if os.path.getsize(out) <= _MAX_BYTES:
                 break
-        return out if os.path.exists(out) else None
+        return out
     except Exception as e:
-        LOGGER.warning(f"[ThumbStore] prep_for_upload failed: {e}")
+        LOGGER.warning(f"[ThumbStore] prep_for_upload: {e}")
         return None
 
 
 # ── Helper ────────────────────────────────────────────────────
 
 def _rm(path: str):
-    try:
-        os.remove(path)
-    except Exception:
-        pass
+    try: os.remove(path)
+    except Exception: pass

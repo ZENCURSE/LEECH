@@ -255,11 +255,11 @@ async def _get_thumb_dims(thumb_path: str) -> tuple[int, int]:
 
 def _prep_thumb(thumb_path: str) -> str | None:
     """
-    Delegate to hd_thumb.prep_thumb — ensures JPEG 1280×720 ≤ 200 KB.
-    Uses progressive compression so Telegram always accepts the thumb.
+    Final prep before passing to send_video/send_document.
+    Outputs 1280×720 JPEG ≤ 200 KB — full HD via Pyrogram MTProto.
     """
-    from bot.utils.hd_thumb import prep_thumb
-    return prep_thumb(thumb_path)
+    from bot.utils.thumb_store import prep_for_upload
+    return prep_for_upload(thumb_path)
 
 
 # ── Send helpers ──────────────────────────────────────────────

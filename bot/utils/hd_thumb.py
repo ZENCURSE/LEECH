@@ -4,13 +4,13 @@ All logic lives in thumbnail.py (unified system).
 This module re-exports the functions that the rest of the codebase imports.
 """
 from bot.utils.thumbnail import (
-    prep_thumb,
     generate_hd_thumb,
     generate_title_card,
     get_thumbnail,
 )
+from bot.utils.thumb_store import prep_for_upload as prep_thumb
 
-# _hq_resize_thumb used by uploader.py and media_utils.py
+# _hq_resize_thumb used by uploader.py and media_utils.py — keep at HD
 def _hq_resize_thumb(src: str, dest: str,
                      max_w: int = 1280, max_h: int = 720) -> str | None:
     return prep_thumb(src, dest)
