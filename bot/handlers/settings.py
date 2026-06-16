@@ -436,11 +436,8 @@ async def settings_cb(client: Client, cb: CallbackQuery):
         return await cb.answer()
 
     if data == "stg_del_thumb":
-        s = users_db.get_settings(uid)
-        p = s.get("thumb_path")
-        if p and os.path.exists(p):
-            try: os.remove(p)
-            except Exception: pass
+        from bot.utils.thumb_store import delete_user_thumb
+        delete_user_thumb(uid)
         users_db.update_settings(uid, thumb_path=None)
         await cb.answer("🗑 Thumbnail removed.")
         await _safe_edit(cb, _upload_text(uid), _upload_kb(uid))
@@ -519,15 +516,15 @@ async def save_thumbnail_photo(client: Client, message: Message):
     if _waiting.get(uid) != "thumb": return
     _waiting.pop(uid, None)
     _cancel_wait(uid)
-    os.makedirs(THUMB_DIR, exist_ok=True)
-    raw  = os.path.join(THUMB_DIR, f"{uid}_raw.jpg")
-    path = os.path.join(THUMB_DIR, f"{uid}.jpg")
+    from bot.utils.thumb_store import save_user_thumb, TMP_DIR as _TMP
+    os.makedirs(_TMP, exist_ok=True)
+    raw = os.path.join(_TMP, f"{uid}_raw.jpg")
     await client.download_media(message.photo.file_id, file_name=raw)
-    from bot.utils.media_utils import _hq_resize_thumb
-    final = _hq_resize_thumb(raw, path, max_w=1280, max_h=720)
-    try:
-        if raw != final and os.path.exists(raw): os.remove(raw)
+    final = save_user_thumb(uid, raw)
+    try: os.remove(raw)
     except Exception: pass
+    if not final:
+        return await message.reply_text("❌ Failed to save thumbnail.", parse_mode=enums.ParseMode.HTML)
     users_db.update_settings(uid, thumb_path=final)
     await message.reply_text(
         "✅ <b>Thumbnail saved!</b>\n<i>Tip: send as a File for full original quality.</i>",
@@ -552,15 +549,15 @@ async def save_document(client: Client, message: Message):
             )
         _waiting.pop(uid, None)
         _cancel_wait(uid)
-        os.makedirs(THUMB_DIR, exist_ok=True)
-        raw  = os.path.join(THUMB_DIR, f"{uid}_raw{ext}")
-        path = os.path.join(THUMB_DIR, f"{uid}.jpg")
+        from bot.utils.thumb_store import save_user_thumb, TMP_DIR as _TMP
+        os.makedirs(_TMP, exist_ok=True)
+        raw = os.path.join(_TMP, f"{uid}_raw{ext}")
         await client.download_media(doc.file_id, file_name=raw)
-        from bot.utils.media_utils import _hq_resize_thumb
-        final = _hq_resize_thumb(raw, path, max_w=1280, max_h=720)
-        try:
-            if raw != final and os.path.exists(raw): os.remove(raw)
+        final = save_user_thumb(uid, raw)
+        try: os.remove(raw)
         except Exception: pass
+        if not final:
+            return await message.reply_text("❌ Failed to save thumbnail.", parse_mode=enums.ParseMode.HTML)
         users_db.update_settings(uid, thumb_path=final)
         await message.reply_text(
             "✅ <b>Thumbnail saved!</b> (full quality, q=95)",

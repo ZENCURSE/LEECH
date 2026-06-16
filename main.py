@@ -62,6 +62,8 @@ async def main():
 
     from bot import app, user_app, send_startup_log
     from bot.database.users_db import init_db
+    from bot.utils.thumb_store import cleanup_tmp
+    cleanup_tmp()   # wipe leftover temp thumbs from previous run
     # Run DB init in background — health check already passing
     asyncio.create_task(init_db())
     await asyncio.sleep(1)

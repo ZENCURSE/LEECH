@@ -51,9 +51,8 @@ _MIN_BYTES = 10_000
 _W, _H     = 1280, 720
 _MAX_KB    = 200      # Telegram reliable thumb size limit
 
-# Disk cache directory inside downloads
-_CACHE_DIR  = os.path.join(getattr(config, "DOWNLOAD_DIR", "/downloads"), ".thumb_cache")
-_CACHE_SECS = 7 * 24 * 3600   # 7 days
+# Cache delegated to thumb_store
+from bot.utils.thumb_store import cache_get as _cache_get_ext, cache_put as _cache_put_ext
 
 # Font search paths (Dockerfile installs fonts-dejavu + fonts-liberation)
 _FONTS_BOLD = [
@@ -110,28 +109,14 @@ def _cache_key(title: str, year: str | None) -> str:
     return hashlib.md5(raw).hexdigest()
 
 
-def _cache_get(title: str, year: str | None) -> str | None:
-    os.makedirs(_CACHE_DIR, exist_ok=True)
-    key  = _cache_key(title, year)
-    path = os.path.join(_CACHE_DIR, f"{key}.jpg")
-    if os.path.exists(path):
-        age = time.time() - os.path.getmtime(path)
-        if age < _CACHE_SECS and os.path.getsize(path) > _MIN_BYTES:
-            LOGGER.debug(f"[Thumb] cache hit: {title} ({year})")
-            return path
-    return None
+def _cache_get(title, year):
+    result = _cache_get_ext(title, year)
+    if result:
+        LOGGER.debug(f"[Thumb] cache hit: {title} ({year})")
+    return result
 
-
-def _cache_put(title: str, year: str | None, src: str) -> str:
-    os.makedirs(_CACHE_DIR, exist_ok=True)
-    key  = _cache_key(title, year)
-    dest = os.path.join(_CACHE_DIR, f"{key}.jpg")
-    try:
-        import shutil
-        shutil.copy2(src, dest)
-    except Exception:
-        pass
-    return dest
+def _cache_put(title, year, src):
+    return _cache_put_ext(title, year, src) or src
 
 
 # ── HTTP helpers ──────────────────────────────────────────────
