@@ -254,23 +254,32 @@ async def _download_with_gdown(url, file_id, dest_dir, task_id, msg, uid):
                 use_cookies=False,
             )
         )
+        if not os.path.exists(out_path):
+            raise FileNotFoundError(f"gdown finished but nothing was saved to {out_path}")
+        LOGGER.info(f"[GDrive] ✅ Folder downloaded to {out_path}")
+        return out_path
     else:
-        # Try direct uc URL first (works for most public files)
+        # Try gdown first
         direct_url = f"https://drive.google.com/uc?id={file_id}&export=download"
-        out_path = os.path.join(dest_dir, f"gdrive_{file_id}")
-        result = await loop.run_in_executor(
-            None,
-            lambda: gdown.download(direct_url, output=out_path, quiet=False, fuzzy=True)
-        )
-        if not result:
-            raise RuntimeError("gdown could not download the file — it may be private or require login.")
-        out_path = result
+        out_path   = os.path.join(dest_dir, f"gdrive_{file_id}")
+        result = None
+        try:
+            result = await loop.run_in_executor(
+                None,
+                lambda: gdown.download(direct_url, output=out_path, quiet=False, fuzzy=True)
+            )
+        except Exception as e:
+            LOGGER.warning(f"[GDrive] gdown failed: {e} — trying yt-dlp")
 
-    if not os.path.exists(out_path):
-        raise FileNotFoundError(f"gdown finished but nothing was saved to {out_path}")
+        if result and os.path.exists(result):
+            LOGGER.info(f"[GDrive] ✅ Downloaded via gdown: {result}")
+            return result
 
-    LOGGER.info(f"[GDrive] ✅ Downloaded to {out_path}")
-    return out_path
+        # Fallback: yt-dlp (handles quota/warning pages better)
+        LOGGER.info("[GDrive] Falling back to yt-dlp…")
+        await safe_edit(msg, _card(task_id, "⬇️ Retrying via yt-dlp…"))
+        from bot.downloaders.ytdlp_downloader import ytdlp_download
+        return await ytdlp_download(url, dest_dir, task_id, msg, uid)
 
 
 # ── Progress card ─────────────────────────────────────────────
