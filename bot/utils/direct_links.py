@@ -50,6 +50,10 @@ async def resolve(url: str) -> dict:
     if re.search(r"https?://t\.me/", url, re.I):
         return _r(url, tg=True)
 
+    # ── Google Drive (file or folder) ─────────────────────────
+    if re.search(r"drive\.google\.com|drive\.usercontent\.google\.com", url, re.I):
+        return _r(url, gdrive=True)
+
     # ── M3U8 / HLS ────────────────────────────────────────────
     if M3U8_RE.search(url):
         return _r(url, ytdlp=True)
@@ -87,7 +91,7 @@ async def resolve(url: str) -> dict:
         return _r(url)   # fallback: try HTTP download
 
 
-def _r(url, ytdlp=False, torrent=False, tg=False, jdleech=False) -> dict:
+def _r(url, ytdlp=False, torrent=False, tg=False, jdleech=False, gdrive=False) -> dict:
     return {
         "url":        url,
         "use_ytdlp":  ytdlp,
@@ -96,4 +100,5 @@ def _r(url, ytdlp=False, torrent=False, tg=False, jdleech=False) -> dict:
         "is_tg":      tg,
         "is_mega":    False,
         "is_jdleech": jdleech,
+        "is_gdrive":  gdrive,
     }

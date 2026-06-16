@@ -534,7 +534,12 @@ async def _run_start(client: Client, message: Message, url: str, action: str,
             await _post_download(client, message, msg, [path], dest_dir, tid, uid, action, start, is_group)
             return
 
-        if info.get("is_tg"):
+        if info.get("is_gdrive"):
+            await _edit(msg, tid, "📂 Downloading from Google Drive…", uid, is_group)
+            from bot.downloaders.gdrive_downloader import gdrive_download
+            path = await gdrive_download(info["url"], dest_dir, tid, msg, uid)
+
+        elif info.get("is_tg"):
             await _edit(msg, tid, "📥 Downloading from Telegram...", uid, is_group)
             from bot.utils.tg_downloader import download_tg_link
             path = await download_tg_link(info["url"], dest_dir, tid, msg)
