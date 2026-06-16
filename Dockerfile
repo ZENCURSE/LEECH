@@ -12,11 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cpulimit \
     && rm -rf /var/lib/apt/lists/*
 
-# Download JDownloader2
-RUN mkdir -p /JDownloader && \
-    wget -q "https://installer.jdownloader.org/JDownloader.jar" \
-    -O /JDownloader/JDownloader.jar && \
-    echo "JDownloader downloaded"
+# JDownloader directory — jar is mounted or downloaded at runtime
+RUN mkdir -p /JDownloader/cfg /JDownloader/logs
 
 WORKDIR /app
 
