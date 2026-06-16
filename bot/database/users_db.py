@@ -16,7 +16,14 @@ _MONGO_URI = getattr(config, "MONGO_URI", "") or os.environ.get("MONGO_URI", "")
 
 if _MONGO_URI:
     from motor.motor_asyncio import AsyncIOMotorClient
-    _mclient = AsyncIOMotorClient(_MONGO_URI)
+    _mclient = AsyncIOMotorClient(
+        _MONGO_URI,
+        serverSelectionTimeoutMS=10000,
+        connectTimeoutMS=10000,
+        socketTimeoutMS=10000,
+        retryWrites=True,
+        tls=True,
+    )
     _mdb     = _mclient[getattr(config, "MONGO_DB", "nxthub")]
     _col_u   = _mdb["users"]
     _col_s   = _mdb["started"]
@@ -54,26 +61,39 @@ def _def():
 
 # ── startup init ──────────────────────────────────────────────
 async def init_db():
-    global _owners, _admins, _started
+    global _owners, _admins, _started, USE_MONGO
     if USE_MONGO:
-        od = await _col_acl.find_one({"_id": "owners"})
-        ad = await _col_acl.find_one({"_id": "admins"})
-        _owners  = (od or {}).get("list", [config.OWNER_ID])
-        _admins  = (ad or {}).get("list", [])
-        if not od:
-            await _col_acl.update_one({"_id": "owners"},
-                {"$setOnInsert": {"list": [config.OWNER_ID]}}, upsert=True)
-        docs = await _col_s.find({}, {"_id": 1}).to_list(None)
-        _started = {d["_id"] for d in docs}
-        await _col_u.create_index("_id")
-        await _col_s.create_index("_id")
-        print("[DB] MongoDB connected.")
-    else:
-        db = _jload()
-        _owners  = db.get("owners", [config.OWNER_ID])
-        _admins  = db.get("admins", [])
-        _started = set(db.get("started", []))
-        print("[DB] Flat-file JSON mode.")
+        # Retry MongoDB connection up to 3 times before falling back to JSON
+        for attempt in range(1, 4):
+            try:
+                od = await _col_acl.find_one({"_id": "owners"})
+                ad = await _col_acl.find_one({"_id": "admins"})
+                _owners  = (od or {}).get("list", [config.OWNER_ID])
+                _admins  = (ad or {}).get("list", [])
+                if not od:
+                    await _col_acl.update_one({"_id": "owners"},
+                        {"$setOnInsert": {"list": [config.OWNER_ID]}}, upsert=True)
+                docs = await _col_s.find({}, {"_id": 1}).to_list(None)
+                _started = {d["_id"] for d in docs}
+                await _col_u.create_index("_id")
+                await _col_s.create_index("_id")
+                print("[DB] MongoDB connected.")
+                return
+            except Exception as e:
+                print(f"[DB] MongoDB attempt {attempt}/3 failed: {e}")
+                if attempt < 3:
+                    await asyncio.sleep(5)
+                else:
+                    print("[DB] MongoDB unreachable — falling back to flat-file JSON mode.")
+                    print("[DB] ⚠️  Fix: Go to MongoDB Atlas → Network Access → Add 0.0.0.0/0")
+                    USE_MONGO = False
+
+    # Flat-file fallback
+    db = _jload()
+    _owners  = db.get("owners", [config.OWNER_ID])
+    _admins  = db.get("admins", [])
+    _started = set(db.get("started", []))
+    print("[DB] Running in flat-file JSON mode (data/users.json).")
 
 def _ensure():
     """Sync fallback if init_db wasn't awaited yet."""
