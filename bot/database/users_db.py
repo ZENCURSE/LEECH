@@ -82,7 +82,7 @@ async def init_db():
             except Exception as e:
                 print(f"[DB] MongoDB attempt {attempt}/3 failed: {e}")
                 if attempt < 3:
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(2)
                 else:
                     print("[DB] MongoDB unreachable — falling back to flat-file JSON mode.")
                     print("[DB] ⚠️  Fix: Go to MongoDB Atlas → Network Access → Add 0.0.0.0/0")

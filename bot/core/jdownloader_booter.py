@@ -39,8 +39,8 @@ class JDownloader:
             return
 
         if not os.path.exists(JD_JAR):
-            self.error = f"JDownloader.jar not found at {JD_JAR}"
-            LOGGER.error(f"[JD] {self.error}")
+            self.error = f"JDownloader not available (jar not found)"
+            LOGGER.info("[JD] JDownloader.jar not present — JD features disabled. Bot running normally.")
             return
 
         # Write JD config files so it auto-connects to MyJDownloader.org

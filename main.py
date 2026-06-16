@@ -57,11 +57,14 @@ async def main():
     _start_web_server()
     await asyncio.sleep(1)
 
+    # ── Health server FIRST — Koyeb requires this to pass before anything else ──
+    await start_health_server()
+
     from bot import app, user_app, send_startup_log
     from bot.database.users_db import init_db
-    await init_db()
-
-    await start_health_server()
+    # Run DB init in background — health check already passing
+    asyncio.create_task(init_db())
+    await asyncio.sleep(1)
 
     # Boot JDownloader if credentials provided
     jd_email = getattr(config, "JD_EMAIL", "").strip()
