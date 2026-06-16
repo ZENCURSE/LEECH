@@ -522,10 +522,16 @@ async def upload_file(client, chat_id: int, file_path: str,
             except Exception:
                 pass
 
-        if thumb and os.path.exists(thumb) and "auto_thumb" in thumb:
+    # ── Cleanup thumbnail after all parts uploaded ─────────────
+    # Delete any auto-generated/prepped thumb. Never delete user's
+    # permanent custom thumb which lives in data/thumbs/<uid>.jpg.
+    if thumb and os.path.exists(thumb):
+        from bot.utils.thumb_store import THUMB_DIR as _PERM_DIR
+        is_permanent = os.path.dirname(os.path.abspath(thumb)) == os.path.abspath(_PERM_DIR)
+        if not is_permanent:
             try: os.remove(thumb)
             except Exception: pass
-            thumb = None
+    thumb = None
 
     # Parts were already removed by _split_file after uploading each one
     # (original was removed by _split_file itself; no extra cleanup needed here)
