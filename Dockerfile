@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     default-jre-headless \
     cpulimit \
+    fonts-dejavu-core \
+    fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
 # JDownloader — download jar at build time so it's baked into the image

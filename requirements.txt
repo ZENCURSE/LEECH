@@ -78,3 +78,4 @@ gdown>=5.0
 oauth2client<4.0.0
 httplib2==0.18.0
 pycryptodome>=3.19.0
+numpy
