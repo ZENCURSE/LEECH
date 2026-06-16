@@ -12,8 +12,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cpulimit \
     && rm -rf /var/lib/apt/lists/*
 
-# JDownloader directory — jar is mounted or downloaded at runtime
-RUN mkdir -p /JDownloader/cfg /JDownloader/logs
+# JDownloader — download jar at build time so it's baked into the image
+RUN mkdir -p /JDownloader/cfg /JDownloader/logs && \
+    wget -q --show-progress --progress=bar:force \
+         -O /JDownloader/JDownloader.jar \
+         https://installer.jdownloader.org/JDownloader.jar && \
+    echo "[JD] JDownloader.jar downloaded ($(du -sh /JDownloader/JDownloader.jar | cut -f1))"
 
 WORKDIR /app
 
