@@ -4,11 +4,12 @@ services:
     container_name: nxthub-leech-bot
     restart: unless-stopped
     pull_policy: build
+    network_mode: host          # uses VPS host network — fixes MongoDB timeout
     volumes:
       - ./downloads:/downloads
       - ./data:/app/data
-    ports:
-      - "8000:8000"
+      - ./config.py:/app/config.py   # live config — edit config.py, restart to apply
+      - /JDownloader:/JDownloader    # JDownloader jar mounted from host
     environment:
       - PYTHONUNBUFFERED=1
     healthcheck:
@@ -16,3 +17,4 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 60s
