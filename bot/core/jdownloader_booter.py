@@ -3,6 +3,8 @@ JDownloader Booter — NXTL
 Boots JDownloader.jar locally. JD connects to MyJDownloader.org
 using JD_EMAIL + JD_PASS from config. Bot talks to local API on 127.0.0.1:3128.
 Only needs email + password — no device selection.
+
+Auto-downloads JDownloader.jar on first run if not present.
 """
 import asyncio
 import json
@@ -21,6 +23,42 @@ JD_DIR = "/JDownloader"
 JD_JAR = f"{JD_DIR}/JDownloader.jar"
 JD_CFG = f"{JD_DIR}/cfg"
 
+# Official JDownloader 2 installer JAR (self-extracting, becomes JDownloader.jar)
+JD_DOWNLOAD_URL = "https://installer.jdownloader.org/JDownloader.jar"
+
+
+async def _download_jar() -> bool:
+    """Download JDownloader.jar from the official source. Returns True on success."""
+    import aiohttp
+    LOGGER.info("[JD] JDownloader.jar not found — downloading from jdownloader.org…")
+    await makedirs(JD_DIR, exist_ok=True)
+    tmp = JD_JAR + ".tmp"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(JD_DOWNLOAD_URL, timeout=aiohttp.ClientTimeout(total=300)) as resp:
+                if resp.status != 200:
+                    LOGGER.error(f"[JD] Download failed — HTTP {resp.status}")
+                    return False
+                total = int(resp.headers.get("Content-Length", 0))
+                done = 0
+                async with aiopen(tmp, "wb") as f:
+                    async for chunk in resp.content.iter_chunked(1024 * 256):
+                        await f.write(chunk)
+                        done += len(chunk)
+                        if total:
+                            pct = done * 100 // total
+                            if pct % 10 == 0:
+                                LOGGER.info(f"[JD] Downloading… {pct}% ({done // 1024 // 1024} MB / {total // 1024 // 1024} MB)")
+        os.replace(tmp, JD_JAR)
+        size_mb = os.path.getsize(JD_JAR) / 1024 / 1024
+        LOGGER.info(f"[JD] ✅ JDownloader.jar downloaded ({size_mb:.1f} MB) → {JD_JAR}")
+        return True
+    except Exception as e:
+        LOGGER.error(f"[JD] Download error: {e}")
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        return False
+
 
 class JDownloader:
     def __init__(self):
@@ -38,10 +76,13 @@ class JDownloader:
             LOGGER.warning(f"[JD] {self.error}")
             return
 
+        # Auto-download jar if missing
         if not os.path.exists(JD_JAR):
-            self.error = f"JDownloader not available (jar not found)"
-            LOGGER.info("[JD] JDownloader.jar not present — JD features disabled. Bot running normally.")
-            return
+            success = await _download_jar()
+            if not success:
+                self.error = "JDownloader.jar could not be downloaded — JD features disabled"
+                LOGGER.error(f"[JD] {self.error}")
+                return
 
         # Write JD config files so it auto-connects to MyJDownloader.org
         await makedirs(JD_CFG, exist_ok=True)
