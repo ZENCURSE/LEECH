@@ -223,6 +223,17 @@ def _fmt_size(b: int) -> str:
     return f"{b:.1f} TB"
 
 
+def _fname(name: str) -> str:
+    """HTML-escaped filename wrapped in Telegram's native blockquote tag."""
+    safe = (
+        str(name)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+    return f"<blockquote>🎬 {safe}</blockquote>"
+
+
 def _enc_card(
     name: str,
     pct: float,
@@ -251,7 +262,7 @@ def _enc_card(
     return (
         f"╔═「 ⚙️ <b>{stage}</b> 」\n"
         f"║\n"
-        f"║  🎬 <b>{name}</b>\n"
+        f"{_fname(name)}\n"
         f"║\n"
         f"║  <code>{_bar(pct)}</code>  <b>{pct:.1f}%</b>\n"
         f"║\n"

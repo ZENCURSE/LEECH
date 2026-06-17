@@ -45,8 +45,21 @@ def group_task_kb(uid: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton("🔄 Refresh", callback_data=f"grp_refresh:{uid}"),
     ]])
 
-def cancel_cmd(tid: str) -> str:
-    return f"<code>/c1_{tid.lower()}</code>"
+# ── Filename helper — HTML-escaped + wrapped in native blockquote ──
+def _fname(name: str) -> str:
+    """
+    Telegram blockquote for filenames — renders as a real quote bar
+    in clients (Bot API 7.0+ <blockquote> tag), not plain text.
+    HTML-escapes special chars so filenames with & < > don't break
+    the message's HTML parsing.
+    """
+    safe = (
+        str(name)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+    return f"<blockquote>🎬 {safe}</blockquote>"
 
 # ── Shared helpers ────────────────────────────────────────────
 def _slots_line() -> str:
@@ -76,7 +89,7 @@ def _active_card(status: str, name: str, done: int, total: int,
     lines = [
         f"╔═「 {icon} <b>{label}</b> 」",
         f"║",
-        f"║  🎬 <b>{name}</b>",
+        _fname(name),
         f"║",
         f"║  <code>{bar(pct)}</code>  <b>{pct:.1f}%</b>",
         f"║",
@@ -88,7 +101,7 @@ def _active_card(status: str, name: str, done: int, total: int,
     if elapsed > 2:
         lines.append(f"║  ➤ <b>Time</b>  : <code>{human_time(elapsed)}</code>")
     lines += [
-        f"║  ➤ <b>Task</b>    :  <code>#{tid}</code>",
+        f"║  ➤ <b>Task</b>  : <code>#{tid}</code>",
         f"╚══════════════════════",
         f"  ✖️ Cancel → {cancel_cmd(tid)}",
         f"  <i>{config.WATERMARK}</i>",
@@ -109,7 +122,7 @@ def processing_card(name: str, tid: str, step: str = "Encoding…") -> str:
     return "\n".join([
         f"╔═「 ⚙️ <b>PROCESSING</b> 」",
         f"║",
-        f"║  🎬 <b>{name}</b>",
+        _fname(name),
         f"║",
         f"║  <code>「▫▫▫▫▫▫▫▫▫▫▫▫」</code>  <b>working…</b>",
         f"║",
@@ -130,7 +143,7 @@ def done_card(name: str, size: int, elapsed: float, avg_speed: float,
     lines = [
         f"╔═「 ✅ <b>COMPLETE</b> 」",
         f"║",
-        f"║  🎬 <b>{name}</b>",
+        _fname(name),
         f"║",
         f"╠═「 📊 <b>STATS</b> 」",
         f"║  ➤ <b>Size</b>  : <code>{human_size(size)}</code>",
@@ -154,7 +167,7 @@ def completion_card(filename: str, size: int, elapsed: float, username: str) -> 
     return "\n".join([
         f"╔═「 🎉 <b>TASK DONE</b> 」",
         f"║",
-        f"║  🎬 <b>{filename}</b>",
+        _fname(filename),
         f"║",
         f"╠═「 📊 <b>STATS</b> 」",
         f"║  ➤ <b>Size</b> : <code>{human_size(size)}</code>",
@@ -173,7 +186,7 @@ def queued_card(name: str, tid: str, position: int = 0) -> str:
     return "\n".join([
         f"╔═「 🕐 <b>QUEUED</b> 」",
         f"║",
-        f"║  🎬 <b>{name}</b>",
+        _fname(name),
         f"║",
         f"║  <code>「▫▫▫▫▫▫▫▫▫▫▫▫」</code>  <b>waiting</b>",
         f"║",
@@ -195,7 +208,7 @@ def cancel_card(tid: str, name: str = "") -> str:
         f"║",
     ]
     if name:
-        lines.append(f"║  🎬 <b>{name}</b>")
+        lines.append(_fname(name))
         lines.append(f"║")
     lines += [
         f"║  ➤ <b>Task</b>  :  <code>#{tid}</code>",
@@ -244,7 +257,7 @@ def _task_block(num: int, tid: str, task: dict) -> str:
     lines = [
         f"┌─ <b>{num}.</b> {icon}  <b>{label}</b>  ·  <code>{tid}</code>",
         f"│",
-        f"│  🎬 <b>{name}</b>",
+        _fname(name),
         f"│",
     ]
 
@@ -353,7 +366,7 @@ def build_progress_card(
     lines = [
         f"╔═「 {icon} <b>{label}</b> 」",
         f"║",
-        f"║  🎬 <b>{name}</b>",
+        _fname(name),
         f"║",
         f"║  <code>{bar_str}</code>  <b>{pct:.1f}%</b>",
         f"║",

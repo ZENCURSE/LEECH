@@ -107,6 +107,17 @@ def _card(title: str, body: str) -> str:
     )
 
 
+def _fq(name: str) -> str:
+    """HTML-escaped filename wrapped in Telegram's native blockquote."""
+    safe = (
+        str(name)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+    return f"<blockquote>🎬 {safe}</blockquote>"
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  /encode
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -321,7 +332,7 @@ async def encsub_step1_sub(client: Client, message: Message):
     msg = await message.reply_text(
         _card(
             "✅  Subtitle received!  |  Step 2 / 2 — Send Video",
-            f"📄 <code>{os.path.splitext(fname)[0]}</code>\n\n"
+            f"{_fq(os.path.splitext(fname)[0])}\n\n"
             "Now send the video file to encode.\n"
             "Supported: <code>.mkv  .mp4  .avi  .mov  .ts</code>\n\n"
             "<i>⏳ Waiting 2 minutes…</i>",
@@ -370,7 +381,7 @@ async def encsub_step2_video(client: Client, message: Message):
     await msg.edit_text(
         _card(
             "📥  Downloading Both Files…",
-            f"🎬 <code>{vname}</code>\n📄 <code>{sname}</code>",
+            f"{_fq(vname)}\n{_fq(sname)}",
         ),
         parse_mode=enums.ParseMode.HTML,
     )
