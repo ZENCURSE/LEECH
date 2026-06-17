@@ -9,15 +9,17 @@ from bot.utils.thumbnail import (
     get_thumbnail,
 )
 from bot.utils.thumb_store import prep_for_upload as prep_thumb
+from bot.utils.thumb_store import prep_cover
 
-# _hq_resize_thumb used by uploader.py and media_utils.py — keep at HD
+# _hq_resize_thumb used by media_utils.py — keep at HD
 def _hq_resize_thumb(src: str, dest: str,
                      max_w: int = 1280, max_h: int = 720) -> str | None:
-    return prep_thumb(src, dest)
+    return prep_cover(src, dest)   # HD version for legacy callers
 
 
 __all__ = [
     "prep_thumb",
+    "prep_cover",
     "generate_hd_thumb",
     "generate_title_card",
     "get_thumbnail",

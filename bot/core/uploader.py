@@ -254,21 +254,24 @@ async def _get_thumb_dims(thumb_path: str) -> tuple[int, int]:
 
 
 def _prep_thumb(thumb_path: str) -> str | None:
-    """
-    Final prep before passing to send_video/send_document.
-    Outputs 1280×720 JPEG ≤ 200 KB — full HD via Pyrogram MTProto.
-    """
+    """320×320 JPEG for thumb= (Telegram hard limit)."""
     from bot.utils.thumb_store import prep_for_upload
     return prep_for_upload(thumb_path)
+
+
+def _prep_cover(thumb_path: str) -> str | None:
+    """1280×720 JPEG for cover= (PyroTGFork HD video cover)."""
+    from bot.utils.thumb_store import prep_cover
+    return prep_cover(thumb_path)
 
 
 # ── Send helpers ──────────────────────────────────────────────
 
 async def _send_doc(client, chat_id, path, caption, thumb, cb):
-    hd_thumb = _prep_thumb(thumb)
-    tw, th = await _get_thumb_dims(hd_thumb) if hd_thumb else (None, None)
+    small = _prep_thumb(thumb)
+    tw, th = await _get_thumb_dims(small) if small else (None, None)
     return await client.send_document(
-        chat_id=chat_id, document=path, thumb=hd_thumb,
+        chat_id=chat_id, document=path, thumb=small,
         caption=caption, parse_mode=enums.ParseMode.HTML,
         disable_notification=True, progress=cb,
     )
@@ -276,30 +279,33 @@ async def _send_doc(client, chat_id, path, caption, thumb, cb):
 
 async def _send(client, chat_id, path, caption, thumb, cb, as_doc, uid=0):
     """
-    Upload file with auto HD thumbnail — fully automatic, user does nothing.
-    thumb parameter is the pre-generated HD thumb from generate_hd_thumb().
-    If thumb is still None here we run a last-chance ffmpeg extract.
+    Upload file with dual-thumbnail support:
+      thumb=  → 320×320 JPEG   (Telegram file list preview, hard limit)
+      cover=  → 1280×720 JPEG  (HD video cover via PyroTGFork cover= param)
+
+    Both are generated from the same source image.
+    If PyroTGFork doesn't support cover= we fall back to thumb= only.
     """
-    from bot.utils.hd_thumb import generate_hd_thumb, prep_thumb
+    from bot.utils.hd_thumb import generate_hd_thumb
 
     is_video, is_audio, is_image = await get_document_type(path)
 
-    # ── Auto-generate HD thumb if not yet available ───────────
+    # Auto-generate thumb if not available
     if not thumb and (is_video or is_audio):
         thumb = await generate_hd_thumb(path, uid=uid)
 
-    # ── Documents (forced or unknown type) ────────────────────
+    # ── Documents ─────────────────────────────────────────────
     if as_doc or (not is_video and not is_audio and not is_image):
-        hd_thumb = prep_thumb(thumb) if thumb else None
-        return await _send_doc(client, chat_id, path, caption, hd_thumb, cb)
+        small = _prep_thumb(thumb)
+        return await _send_doc(client, chat_id, path, caption, small, cb)
 
     # ── Video ─────────────────────────────────────────────────
     if is_video:
         duration, _, _ = await get_media_info(path)
-        hd_thumb = prep_thumb(thumb) if thumb else None
-        tw, th   = await _get_thumb_dims(hd_thumb) if hd_thumb else (1280, 720)
+        small = _prep_thumb(thumb)    # 320×320 for thumb=
+        cover = _prep_cover(thumb)    # 1280×720 for cover=
 
-        # Get real video dimensions for proper Telegram player sizing
+        # Real video dimensions for Telegram player sizing
         try:
             import subprocess as _sp, json as _j
             _o = _sp.check_output([
@@ -309,34 +315,45 @@ async def _send(client, chat_id, path, caption, thumb, cb, as_doc, uid=0):
             _s = _j.loads(_o)["streams"][0]
             vw, vh = int(_s["width"]), int(_s["height"])
         except Exception:
-            vw, vh = tw or 1280, th or 720
+            vw, vh = 1280, 720
 
         try:
-            return await client.send_video(
+            # Try with cover= first (PyroTGFork ≥ layer 166)
+            send_kwargs = dict(
                 chat_id=chat_id, video=path, caption=caption,
                 parse_mode=enums.ParseMode.HTML, duration=duration or 0,
                 width=vw, height=vh,
-                thumb=hd_thumb,
+                thumb=small,
                 supports_streaming=True,
                 disable_notification=True, progress=cb,
             )
+            if cover:
+                send_kwargs["cover"] = cover
+            return await client.send_video(**send_kwargs)
+        except TypeError:
+            # cover= not supported in this pyrofork version — retry without it
+            send_kwargs.pop("cover", None)
+            try:
+                return await client.send_video(**send_kwargs)
+            except (BadRequest, RPCError):
+                return await _send_doc(client, chat_id, path, caption, small, cb)
         except (BadRequest, RPCError):
-            return await _send_doc(client, chat_id, path, caption, hd_thumb, cb)
+            return await _send_doc(client, chat_id, path, caption, small, cb)
 
     # ── Audio ─────────────────────────────────────────────────
     if is_audio:
         duration, artist, title = await get_media_info(path)
-        hd_thumb = prep_thumb(thumb) if thumb else None
+        small = _prep_thumb(thumb)
         try:
             return await client.send_audio(
                 chat_id=chat_id, audio=path, caption=caption,
                 parse_mode=enums.ParseMode.HTML, duration=duration or 0,
                 performer=artist or "",
                 title=title or os.path.splitext(os.path.basename(path))[0],
-                thumb=hd_thumb, disable_notification=True, progress=cb,
+                thumb=small, disable_notification=True, progress=cb,
             )
         except (BadRequest, RPCError):
-            return await _send_doc(client, chat_id, path, caption, hd_thumb, cb)
+            return await _send_doc(client, chat_id, path, caption, small, cb)
 
     # ── Image ─────────────────────────────────────────────────
     if is_image:
@@ -531,6 +548,12 @@ async def upload_file(client, chat_id: int, file_path: str,
         if not is_permanent:
             try: os.remove(thumb)
             except Exception: pass
+            # Also remove any _thumb320 / _cover1280 derivatives
+            for suffix in ("_thumb320.jpg", "_cover1280.jpg"):
+                deriv = thumb.rsplit(".", 1)[0] + suffix
+                if os.path.exists(deriv):
+                    try: os.remove(deriv)
+                    except Exception: pass
     thumb = None
 
     # Parts were already removed by _split_file after uploading each one

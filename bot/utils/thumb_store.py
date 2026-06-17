@@ -194,32 +194,66 @@ def cleanup_tmp():
 
 def prep_for_upload(src: str, dest: str | None = None) -> str | None:
     """
-    Final step before passing thumb to send_video / send_document.
-    Ensures 1280×720 JPEG ≤ 200 KB — full HD, works on Pyrogram MTProto.
+    Prepare the SMALL thumbnail for thumb= parameter.
+    Telegram hard requirement: JPEG, ≤ 200 KB, max 320×320 px.
+    This is the tiny preview shown in file lists and notification previews.
+    Used for ALL send_video/send_document/send_audio thumb= calls.
     """
     if not src or not os.path.exists(src):
         return None
-    out = dest or src.rsplit(".", 1)[0] + "_send.jpg"
+    out = dest or src.rsplit(".", 1)[0] + "_thumb320.jpg"
     try:
         from PIL import Image
-        img    = Image.open(src).convert("RGB")
-        w, h   = img.size
-        # Already 1280×720? Skip resize
-        if w != _W or h != _H:
-            scale  = min(_W / w, _H / h)
-            nw, nh = int(w * scale), int(h * scale)
-            img    = img.resize((nw, nh), Image.LANCZOS)
-            canvas = Image.new("RGB", (_W, _H), (0, 0, 0))
-            canvas.paste(img, ((_W - nw) // 2, (_H - nh) // 2))
-        else:
-            canvas = img
-        for q in (95, 88, 80, 70, 60):
-            canvas.save(out, "JPEG", quality=q, subsampling=0, optimize=True)
+        img = Image.open(src).convert("RGB")
+        # thumbnail() fits within box preserving aspect ratio
+        img.thumbnail((320, 320), Image.LANCZOS)
+        for q in (92, 82, 72, 60):
+            img.save(out, "JPEG", quality=q, optimize=True)
             if os.path.getsize(out) <= _MAX_BYTES:
                 break
         return out
     except Exception as e:
-        LOGGER.warning(f"[ThumbStore] prep_for_upload: {e}")
+        LOGGER.warning(f"[ThumbStore] prep_for_upload (320): {e}")
+        return None
+
+
+def prep_cover(src: str, dest: str | None = None) -> str | None:
+    """
+    Prepare the HD cover for the cover= parameter in PyroTGFork send_video().
+
+    Background:
+      Telegram has TWO separate thumbnail fields in its TL schema:
+        - thumb     → InputFile, max 320×320, shown in file list / notifications
+        - video_cover (exposed as cover= in PyroTGFork) → full photo object,
+                      accepts up to 1280×720, shown when you open/play the video
+
+    PyroTGFork added cover= to send_video() in layer 166+.
+    Sending cover= uploads the image as a full Photo (not a document thumbnail),
+    which Telegram stores and displays at full resolution in the video player.
+
+    This function outputs a letterboxed 1280×720 JPEG ≤ 200 KB.
+    """
+    if not src or not os.path.exists(src):
+        return None
+    out = dest or src.rsplit(".", 1)[0] + "_cover1280.jpg"
+    try:
+        from PIL import Image
+        img    = Image.open(src).convert("RGB")
+        w, h   = img.size
+        scale  = min(_W / w, _H / h)
+        nw, nh = int(w * scale), int(h * scale)
+        img    = img.resize((nw, nh), Image.LANCZOS)
+        canvas = Image.new("RGB", (_W, _H), (0, 0, 0))
+        canvas.paste(img, ((_W - nw) // 2, (_H - nh) // 2))
+        for q in (95, 88, 80, 70):
+            canvas.save(out, "JPEG", quality=q, subsampling=0, optimize=True)
+            if os.path.getsize(out) <= _MAX_BYTES:
+                break
+        size_kb = os.path.getsize(out) / 1024
+        LOGGER.debug(f"[ThumbStore] cover prep: {nw}×{nh} → {size_kb:.0f} KB")
+        return out
+    except Exception as e:
+        LOGGER.warning(f"[ThumbStore] prep_cover (1280): {e}")
         return None
 
 
