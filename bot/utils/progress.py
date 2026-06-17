@@ -6,13 +6,16 @@ import config
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from bot.utils.size_utils import human_size, human_speed, human_time
 
-# ── Progress bar  ▰ filled · ▶ cursor · ▱ empty ─────────────
-def bar(pct: float, width: int = 15) -> str:
+# ── Progress bar — D8 design ─────────────────────────────────
+# 「▉▉▉▉▶▫▫▫▫▫▫」  thick block fill + sharp arrow tip + square tail,
+# framed in corner brackets. Used everywhere progress is shown.
+def bar(pct: float, width: int = 12) -> str:
     filled = int(width * pct / 100)
     empty  = width - filled
-    if 0 < filled < width:
-        return "▰" * filled + "▶" + "▱" * (empty - 1)
-    return "▰" * filled + "▱" * empty
+    tip    = "▶" if 0 < filled < width else ""
+    body   = "▉" * max(filled - len(tip), 0)
+    tail   = "▫" * max(empty - (1 if tip else 0), 0)
+    return f"「{body}{tip}{tail}」"
 
 # ── Status meta ───────────────────────────────────────────────
 _STYLE = {
@@ -78,12 +81,12 @@ def _active_card(status: str, name: str, done: int, total: int,
         f"║  <code>{bar(pct)}</code>  <b>{pct:.1f}%</b>",
         f"║",
         f"╠═「 📊 <b>STATS</b> 」",
-        f"║  ➤ <b>Size</b>    :  {human_size(done)}  /  {human_size(total)}",
-        f"║  ➤ <b>Speed</b>   :  {human_speed(speed)}",
-        f"║  ➤ <b>ETA</b>     :  {human_time(eta)}",
+        f"║  ➤ <b>Size</b>  : <code>{human_size(done)} / {human_size(total)}</code>",
+        f"║  ➤ <b>Speed</b> : <code>{human_speed(speed)}</code>",
+        f"║  ➤ <b>ETA</b>   : <code>{human_time(eta)}</code>",
     ]
     if elapsed > 2:
-        lines.append(f"║  ➤ <b>Elapsed</b> :  {human_time(elapsed)}")
+        lines.append(f"║  ➤ <b>Time</b>  : <code>{human_time(elapsed)}</code>")
     lines += [
         f"║  ➤ <b>Task</b>    :  <code>#{tid}</code>",
         f"╚══════════════════════",
@@ -108,7 +111,7 @@ def processing_card(name: str, tid: str, step: str = "Encoding…") -> str:
         f"║",
         f"║  🎬 <b>{name}</b>",
         f"║",
-        f"║  <code>{'⬜' * 15}</code>  <b>working…</b>",
+        f"║  <code>「▫▫▫▫▫▫▫▫▫▫▫▫」</code>  <b>working…</b>",
         f"║",
         f"╠═「 🔧 <b>STEP</b> 」",
         f"║  ➤ {step}",
@@ -130,13 +133,13 @@ def done_card(name: str, size: int, elapsed: float, avg_speed: float,
         f"║  🎬 <b>{name}</b>",
         f"║",
         f"╠═「 📊 <b>STATS</b> 」",
-        f"║  ➤ <b>Size</b>    :  {human_size(size)}",
-        f"║  ➤ <b>Speed</b>   :  {human_speed(avg_speed)}",
-        f"║  ➤ <b>Time</b>    :  {human_time(elapsed)}",
-        f"║  ➤ <b>Task</b>    :  <code>#{tid}</code>",
+        f"║  ➤ <b>Size</b>  : <code>{human_size(size)}</code>",
+        f"║  ➤ <b>Speed</b> : <code>{human_speed(avg_speed)}</code>",
+        f"║  ➤ <b>Time</b>  : <code>{human_time(elapsed)}</code>",
+        f"║  ➤ <b>Task</b>  : <code>#{tid}</code>",
     ]
     if username:
-        lines.append(f"║  ➤ <b>By</b>      :  {username}")
+        lines.append(f"║  ➤ <b>By</b>    :  {username}")
     lines += [
         f"╚══════════════════════",
         f"  <i>{config.WATERMARK}</i>",
@@ -154,9 +157,9 @@ def completion_card(filename: str, size: int, elapsed: float, username: str) -> 
         f"║  🎬 <b>{filename}</b>",
         f"║",
         f"╠═「 📊 <b>STATS</b> 」",
-        f"║  ➤ <b>Size</b>  :  {human_size(size)}",
-        f"║  ➤ <b>Time</b>  :  {human_time(elapsed)}",
-        f"║  ➤ <b>By</b>    :  {username}",
+        f"║  ➤ <b>Size</b> : <code>{human_size(size)}</code>",
+        f"║  ➤ <b>Time</b> : <code>{human_time(elapsed)}</code>",
+        f"║  ➤ <b>By</b>   :  {username}",
         f"╚══════════════════════",
         f"  <i>{config.WATERMARK}</i>",
     ])
@@ -172,7 +175,7 @@ def queued_card(name: str, tid: str, position: int = 0) -> str:
         f"║",
         f"║  🎬 <b>{name}</b>",
         f"║",
-        f"║  <code>{'⬜' * 15}</code>  <b>waiting</b>",
+        f"║  <code>「▫▫▫▫▫▫▫▫▫▫▫▫」</code>  <b>waiting</b>",
         f"║",
         f"╠═「 📋 <b>INFO</b> 」",
         f"║  ➤ <b>Queue</b>  :  {pos_str}",
@@ -249,9 +252,9 @@ def _task_block(num: int, tid: str, task: dict) -> str:
         lines += [
             f"│  <code>{bar(pct, 12)}</code>  <b>{pct:.0f}%</b>",
             f"│",
-            f"│  ➤ <b>Size</b>   :  {human_size(done)} / {human_size(total)}",
-            f"│  ➤ <b>Speed</b>  :  {human_speed(speed)}",
-            f"│  ➤ <b>ETA</b>    :  {human_time(eta)}",
+            f"│  ➤ <b>Size</b>  : <code>{human_size(done)} / {human_size(total)}</code>",
+            f"│  ➤ <b>Speed</b> : <code>{human_speed(speed)}</code>",
+            f"│  ➤ <b>ETA</b>   : <code>{human_time(eta)}</code>",
         ]
     elif status == "queued":
         lines.append(f"│  ➤ 🕐 Waiting in queue…")
@@ -359,24 +362,24 @@ def build_progress_card(
 
     if status in ("downloading", "uploading"):
         if total:
-            lines.append(f"║  ➤ <b>Size</b>    :  {human_size(done)}  /  {human_size(total)}")
+            lines.append(f"║  ➤ <b>Size</b>  : <code>{human_size(done)} / {human_size(total)}</code>")
         if speed:
-            lines.append(f"║  ➤ <b>Speed</b>   :  {human_speed(speed)}")
+            lines.append(f"║  ➤ <b>Speed</b> : <code>{human_speed(speed)}</code>")
         if eta:
-            lines.append(f"║  ➤ <b>ETA</b>     :  {human_time(int(eta))}")
+            lines.append(f"║  ➤ <b>ETA</b>   : <code>{human_time(int(eta))}</code>")
         if elapsed > 2:
-            lines.append(f"║  ➤ <b>Elapsed</b> :  {human_time(int(elapsed))}")
+            lines.append(f"║  ➤ <b>Time</b>  : <code>{human_time(int(elapsed))}</code>")
 
     elif status in ("encoding", "merging"):
         if enc_speed:
-            lines.append(f"║  ➤ <b>Speed</b>   :  {enc_speed:.2f}x")
+            lines.append(f"║  ➤ <b>Speed</b> : <code>{enc_speed:.2f}x</code>")
         if elapsed:
-            lines.append(f"║  ➤ <b>Elapsed</b> :  {human_time(int(elapsed))}")
+            lines.append(f"║  ➤ <b>Time</b>  : <code>{human_time(int(elapsed))}</code>")
         if eta:
-            lines.append(f"║  ➤ <b>ETA</b>     :  {human_time(int(eta))}")
+            lines.append(f"║  ➤ <b>ETA</b>   : <code>{human_time(int(eta))}</code>")
 
     if tid:
-        lines.append(f"║  ➤ <b>Task</b>    :  <code>#{tid}</code>")
+        lines.append(f"║  ➤ <b>Task</b>  : <code>#{tid}</code>")
 
     lines += [
         f"╚══════════════════════",

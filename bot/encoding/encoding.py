@@ -192,12 +192,14 @@ async def extract_subs(filepath: str, msg, user_id: int) -> str | None:
 #  PROGRESS — card renderer
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def _bar(pct: float, width: int = 16) -> str:
+def _bar(pct: float, width: int = 12) -> str:
+    """D8 design — thick block fill + sharp arrow tip + square tail."""
     filled = int(width * pct / 100)
     empty  = width - filled
-    if 0 < filled < width:
-        return "▰" * filled + "▶" + "▱" * (empty - 1)
-    return "▰" * filled + "▱" * empty
+    tip    = "▶" if 0 < filled < width else ""
+    body   = "▉" * max(filled - len(tip), 0)
+    tail   = "▫" * max(empty - (1 if tip else 0), 0)
+    return f"「{body}{tip}{tail}」"
 
 
 def _fmt_time(s: float) -> str:
@@ -242,7 +244,7 @@ def _enc_card(
         saved   = src_size - out_size
         pct_red = saved / src_size * 100
         sign    = "💚 −" if saved >= 0 else "🔴 +"
-        ratio_line = f"\n║  ➤ <b>Saved</b>    :  {sign}{abs(pct_red):.1f}%  ({_fmt_size(abs(saved))})"
+        ratio_line = f"\n║  ➤ <b>Saved</b> : <code>{sign}{abs(pct_red):.1f}% ({_fmt_size(abs(saved))})</code>"
 
     cancel_line = f"\n  ✖ Cancel → <code>/c1_{tid.lower()}</code>" if tid else ""
 
@@ -254,13 +256,13 @@ def _enc_card(
         f"║  <code>{_bar(pct)}</code>  <b>{pct:.1f}%</b>\n"
         f"║\n"
         f"╠═「 📊 <b>STATS</b> 」\n"
-        f"║  ➤ <b>Frame</b>   :  {frame:,}  @  {fps:.1f} fps\n"
-        f"║  ➤ <b>Speed</b>   :  {speed:.2f}x  realtime\n"
-        f"║  ➤ <b>ETA</b>     :  {_fmt_time(eta)}\n"
-        f"║  ➤ <b>Elapsed</b> :  {_fmt_time(elapsed)}\n"
-        f"║  ➤ <b>Output</b>  :  {_fmt_size(out_size)}"
+        f"║  ➤ <b>Frame</b> : <code>{frame:,} @ {fps:.1f}fps</code>\n"
+        f"║  ➤ <b>Speed</b> : <code>{speed:.2f}x realtime</code>\n"
+        f"║  ➤ <b>ETA</b>   : <code>{_fmt_time(eta)}</code>\n"
+        f"║  ➤ <b>Time</b>  : <code>{_fmt_time(elapsed)}</code>\n"
+        f"║  ➤ <b>Output</b> : <code>{_fmt_size(out_size)}</code>"
         f"{ratio_line}\n"
-        f"║  ➤ <b>Task</b>    :  <code>#{tid}</code>\n"
+        f"║  ➤ <b>Task</b>  : <code>#{tid}</code>\n"
         f"╚══════════════════════"
         f"{cancel_line}\n"
         f"  <i>{wm}</i>"
