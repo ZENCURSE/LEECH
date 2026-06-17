@@ -71,7 +71,18 @@ def _get_cookies_path(uid: int, url: str) -> str | None:
     return None
 
 def _is_m3u8(url: str) -> bool:
-    return bool(re.search(r"\.m3u8(\?|$)|/hls/|/m3u8/|playlist\.m3u8", url, re.I))
+    return bool(re.search(
+        r"\.m3u8(\?|#|$)"
+        r"|/hls/"
+        r"|/m3u8/"
+        r"|playlist\.m3u8"
+        r"|index\.m3u8"
+        r"|master\.m3u8"
+        r"|chunklist\.m3u8"
+        r"|[?&]format=(hls|m3u8)"
+        r"|[?&]type=(hls|m3u8)",
+        url, re.I,
+    ))
 
 
 async def ytdlp_download(
@@ -132,10 +143,13 @@ async def ytdlp_download(
                     loop,
                 )
 
-    def _build_opts(impersonate=None) -> dict:
+    def _build_opts(impersonate=None, hls_native=False) -> dict:
         if is_hls:
-            fmt = "bestvideo+bestaudio/best"
-            merge_fmt = "mkv"
+            # FIX: prefer muxed "best" first — most HLS streams are muxed,
+            # not split into separate video+audio tracks.
+            # "bestvideo+bestaudio/best" was backwards and broke muxed streams.
+            fmt = "best/bestvideo+bestaudio/bestvideo+bestaudio"
+            merge_fmt = "mp4"
         else:
             fmt = (
                 "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]"
@@ -163,7 +177,9 @@ async def ytdlp_download(
             "progress_hooks":             [_hook],
             "quiet":                      True,
             "no_warnings":                True,
-            "noplaylist":                 True,
+            # FIX: do NOT set noplaylist=True for HLS — M3U8 IS a playlist/manifest.
+            # noplaylist only applies to non-HLS (YouTube playlists etc).
+            "noplaylist":                 not is_hls,
             "concurrent_fragment_downloads": 4,
             "source_address":             "0.0.0.0",
             "http_headers": {
@@ -188,18 +204,18 @@ async def ytdlp_download(
             }],
         }
 
-        # HLS-specific: use ffmpeg as the downloader for better stream support
+        # HLS-specific options
         if is_hls:
-            opts["external_downloader"] = "ffmpeg"
-            opts["external_downloader_args"] = {
-                "ffmpeg_i": [
-                    "-reconnect", "1",
-                    "-reconnect_streamed", "1",
-                    "-reconnect_delay_max", "30",
-                ],
-            }
-            # Allow geo-blocked HLS
             opts["geo_bypass"] = True
+            # FIX: do NOT use external_downloader=ffmpeg for HLS when also using
+            # bestvideo+bestaudio format selector — ffmpeg can't handle both
+            # stream-merging and HLS download simultaneously.
+            # Use yt-dlp's native HLS downloader instead; it handles muxed
+            # and split streams correctly.
+            opts["hls_use_mpegts"] = True   # better segment buffering
+            if hls_native:
+                # Second-attempt: force native HLS downloader explicitly
+                opts["hls_prefer_native"] = True
 
         if cookies:
             opts["cookiefile"] = cookies
@@ -252,6 +268,21 @@ async def ytdlp_download(
                     return
                 except Exception as e2:
                     err_ref[0] = e2
+                    return
+            # HLS-specific retry: if first attempt failed, try with native HLS downloader
+            if is_hls and any(
+                kw in err1 for kw in (
+                    "fragment", "m3u8", "hls", "no video formats",
+                    "requested format is not available", "format error",
+                )
+            ):
+                try:
+                    _run_once(_build_opts(None, hls_native=True))
+                    return
+                except yt_dlp.utils.DownloadCancelled:
+                    return
+                except Exception as e3:
+                    err_ref[0] = e3
                     return
             err_ref[0] = e
 

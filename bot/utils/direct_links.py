@@ -30,9 +30,25 @@ YTDLP_RE = re.compile(
     re.I,
 )
 
-# M3U8/HLS patterns
+# M3U8/HLS patterns (URL-based)
 M3U8_RE = re.compile(
-    r"\.m3u8(\?|$)|/hls/|/m3u8/|playlist\.m3u8|index\.m3u8|chunklist\.m3u8|master\.m3u8",
+    r"\.m3u8(\?|#|$)"
+    r"|/hls/"
+    r"|/m3u8/"
+    r"|playlist\.m3u8"
+    r"|index\.m3u8"
+    r"|chunklist\.m3u8"
+    r"|master\.m3u8"
+    r"|[?&]format=(hls|m3u8)"
+    r"|[?&]type=(hls|m3u8)",
+    re.I,
+)
+
+# M3U8/HLS Content-Type values returned by servers
+_M3U8_CT = re.compile(
+    r"application/(vnd\.apple\.mpegurl|x-mpegurl|mpegurl)"
+    r"|audio/mpegurl"
+    r"|video/mp2t",
     re.I,
 )
 
@@ -84,6 +100,13 @@ async def resolve(url: str) -> dict:
             ) as resp:
                 ct = resp.headers.get("Content-Type", "").lower()
                 fu = str(resp.url)
+                # FIX: detect M3U8 by Content-Type (covers URLs like /stream?format=hls
+                # where there is no .m3u8 in the path)
+                if _M3U8_CT.search(ct):
+                    return _r(fu, ytdlp=True)
+                # Also re-check the final (possibly redirected) URL for M3U8 patterns
+                if M3U8_RE.search(fu):
+                    return _r(fu, ytdlp=True)
                 if "text/html" in ct:
                     return _r(fu, ytdlp=True)
                 return _r(fu)
