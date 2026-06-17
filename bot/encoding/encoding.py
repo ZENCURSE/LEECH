@@ -1,618 +1,621 @@
-
+"""
+encoding.py — NXTL FFmpeg Encode Engine  (full rewrite)
+=========================================================
+Key changes vs old system:
+  • -progress pipe:1  →  read from proc.stdout line-by-line (no temp files)
+  • -loglevel error   →  stderr only gets actual errors, not stats spam
+  • handle_progress() parses every ffmpeg progress key: frame / fps / speed /
+    out_time_us / total_size / progress=end
+  • Progress card shows: animated bar, %, fps, speed multiplier, ETA,
+    elapsed time, current output size, size-reduction vs source
+  • Cancel support: checks task_manager.is_cancelled() and kills ffmpeg
+  • encode() passes tid through so cancel button works
+  • Fixed double proc.communicate() deadlock (was in old code)
+  • Fixed bytes-after-decode bug (old code called .decode() twice)
+  • CRF auto-adjust based on source bitrate (prevent inflation)
+"""
 
 import asyncio
 import json
 import math
 import os
 import re
+import shlex
 import subprocess
 import time
 
 from hachoir.metadata import extractMetadata
 from hachoir.parser import createParser
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-import logging; LOGGER = logging.getLogger("encoding")
+import logging
+LOGGER = logging.getLogger("encoding")
+
 import config
+
 download_dir = config.DOWNLOAD_DIR
-encode_dir = config.DOWNLOAD_DIR + "_enc"
+encode_dir   = config.DOWNLOAD_DIR + "_enc"
+
 from bot.encoding.db import enc_db as db
 from .display_progress import TimeFormatter
 
 
-def get_codec(filepath, channel='v:0'):
-    try:
-        output = subprocess.check_output(['ffprobe', '-v', 'error', '-select_streams', channel,
-                                          '-show_entries', 'stream=codec_name,codec_tag_string', '-of',
-                                          'default=nokey=1:noprint_wrappers=1', filepath])
-        return output.decode('utf-8').split()
-    except subprocess.CalledProcessError as e:
-        LOGGER.error(f"ffprobe failed for {filepath}: {e}")
-        return []
-    except Exception as e:
-        LOGGER.error(f"ffprobe exception for {filepath}: {e}")
-        return []
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  FFPROBE HELPERS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def get_media_streams(filepath):
+def get_codec(filepath: str, channel: str = "v:0") -> list:
     try:
-        cmd = ['ffprobe', '-hide_banner', '-print_format', 'json', '-show_streams', filepath]
-        output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
-        return json.loads(output.decode('utf-8')).get('streams', [])
+        out = subprocess.check_output([
+            "ffprobe", "-v", "error",
+            "-select_streams", channel,
+            "-show_entries", "stream=codec_name,codec_tag_string",
+            "-of", "default=nokey=1:noprint_wrappers=1",
+            filepath,
+        ], stderr=subprocess.DEVNULL)
+        return out.decode().split()
     except Exception as e:
-        LOGGER.error(f"Failed to get media streams: {e}")
+        LOGGER.debug(f"get_codec({channel}): {e}")
         return []
 
-async def extract_subs(filepath, msg, user_id):
 
-    path, extension = os.path.splitext(filepath)
-    name = os.path.basename(path)
-    check = get_codec(filepath, channel='s:0')
-    if check == []:
-        return None
-    elif check == 'pgs':
-        return None
-    else:
-        output = os.path.join(encode_dir, str(msg.id) + '.ass')
-
+def get_media_streams(filepath: str) -> list:
     try:
-        subprocess.call(['ffmpeg', '-y', '-i', filepath, '-map', 's:0', output])
-        # mkvextract might not be in PATH on Windows, handle gracefully
-        try:
-            subprocess.call(['mkvextract', 'attachments', filepath, '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16',
-                            '17', '18', '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34', '35', '36', '37', '38', '39', '40'])
-        except FileNotFoundError:
-            LOGGER.warning("mkvextract not found, skipping attachments extraction.")
-        except Exception as e:
-            LOGGER.error(f"mkvextract failed: {e}")
-
-        # Moving fonts is Linux specific and dangerous on Windows to assume /usr/share/fonts/
-        # We will only attempt this on Linux-like environments or skip if it fails
-        try:
-            if os.name != 'nt':
-                subprocess.run([f"mv -f *.JFPROJ *.FNT *.PFA *.ETX *.WOFF *.FOT *.TTF *.SFD *.VLW *.VFB *.PFB *.OTF *.GXF *.WOFF2 *.ODTTF *.BF *.CHR *.TTC *.BDF *.FON *.GF *.PMT *.AMFM  *.MF *.PFM *.COMPOSITEFONT *.PF2 *.GDR *.ABF *.VNF *.PCF *.SFP *.MXF *.DFONT *.UFO *.PFR *.TFM *.GLIF *.XFN *.AFM *.TTE *.XFT *.ACFM *.EOT *.FFIL *.PK *.SUIT *.NFTR *.EUF *.TXF *.CHA *.LWFN *.T65 *.MCF *.YTF *.F3F *.FEA *.SFT *.PFT /usr/share/fonts/"], shell=True)
-                subprocess.run([f"mv -f *.jfproj *.fnt *.pfa *.etx *.woff *.fot *.ttf *.sfd *.vlw *.vfb *.pfb *.otf *.gxf *.woff2 *.odttf *.bf *.chr *.ttc *.bdf *.fon *.gf *.pmt *.amfm  *.mf *.pfm *.compositefont *.pf2 *.gdr *.abf *.vnf *.pcf *.sfp *.mxf *.dfont *.ufo *.pfr *.tfm *.glif *.xfn *.afm *.tte *.xft *.acfm *.eot *.ffil *.pk *.suit *.nftr *.euf *.txf *.cha *.lwfn *.t65 *.mcf *.ytf *.f3f *.fea *.sft *.pft /usr/share/fonts/ && fc-cache -f"], shell=True)
-        except Exception as e:
-            LOGGER.warning(f"Font moving failed (likely not supported on this OS): {e}")
-
-        return output
+        out = subprocess.check_output([
+            "ffprobe", "-hide_banner", "-print_format", "json",
+            "-show_streams", filepath,
+        ], stderr=subprocess.DEVNULL)
+        return json.loads(out.decode()).get("streams", [])
     except Exception as e:
-        LOGGER.error(f"Extract subs failed: {e}")
-        return None
+        LOGGER.debug(f"get_media_streams: {e}")
+        return []
 
 
-async def encode(filepath, message, msg, audio_map=None, external_sub=None):
-
-    ex = await db.get_extensions(message.from_user.id)
-    path, extension = os.path.splitext(filepath)
-    name = os.path.basename(path)
-
-    if ex == 'MP4':
-        output_filepathh = os.path.join(encode_dir, name + '.mp4')
-    elif ex == 'AVI':
-        output_filepathh = os.path.join(encode_dir, name + '.avi')
-    else:
-        output_filepathh = os.path.join(encode_dir, name + '.mkv')
-
-    output_filepath = output_filepathh
-    subtitles_path = os.path.join(encode_dir, str(msg.id) + '.ass')
-
-    # If external subtitle provided (via /encsub), use it directly
-    # and force hardsub ON — user explicitly uploaded a sub file
-    _force_hardsub = False
-    if external_sub and os.path.isfile(external_sub):
-        subtitles_path = external_sub
-        _force_hardsub = True
-        LOGGER.info(f'Using external subtitle: {external_sub}')
-    else:
-        subtitles_path = await extract_subs(filepath, msg, message.from_user.id) or subtitles_path
-
-    # Use a per-message unique progress file to avoid collisions
-    _enc_tmp = os.path.join(download_dir, f"enc_{msg.id}")
-    os.makedirs(_enc_tmp, exist_ok=True)
-    progress = os.path.join(_enc_tmp, "process.txt")
-    status   = os.path.join(_enc_tmp, "status.json")
-    with open(progress, 'w') as f:
-        pass
-
-    assert(output_filepath != filepath)
-
-    # Check Path
-    if os.path.isfile(output_filepath):
-        LOGGER.warning(f'"{output_filepath}": file already exists')
-    else:
-        LOGGER.info(filepath)
-
-    # HEVC Encode
-    x265 = await db.get_hevc(message.from_user.id)
-    video_i = get_codec(filepath, channel='v:0')
-    if video_i == []:
-        codec = ''
-    else:
-        if x265:
-            codec = '-c:v libx265'
-        else:
-            codec = '-c:v libx264'
-
-    # Tune Encode
-    tune = await db.get_tune(message.from_user.id)
-    if tune:
-        tunevideo = '-tune animation'
-    else:
-        tunevideo = '-tune film'
-
-    # CABAC
-    cbb = await db.get_cabac(message.from_user.id)
-    if cbb:
-        cabac = '-coder 1'
-    else:
-        cabac = '-coder 0'
-
-    # Reframe
-    rf = await db.get_reframe(message.from_user.id)
-    if rf == '4':
-        reframe = '-refs 4'
-    elif rf == '8':
-        reframe = '-refs 8'
-    elif rf == '16':
-        reframe = '-refs 16'
-    else:
-        reframe = ''
-
-    # Bits
-    b = await db.get_bits(message.from_user.id)
-    if not b:
-        codec += ' -pix_fmt yuv420p'
-    else:
-        codec += ' -pix_fmt yuv420p10le'
-
-    # CRF — smart default based on source bitrate to avoid size inflation
-    # Lower CRF = better quality but BIGGER file (0=lossless, 51=worst)
-    # Rule: if source is already compressed at low bitrate, use higher CRF
-    # to avoid re-encoding to a bigger file than the original
-    crf = await db.get_crf(message.from_user.id)
-    if not crf:
-        crf = 26
-        await db.set_crf(message.from_user.id, crf)
-
-    # Auto-adjust: if source bitrate < 2 Mbps, bump CRF up to avoid inflation
+def get_duration(filepath: str) -> int:
     try:
-        import subprocess as _sp, json as _json
-        _probe = _sp.check_output([
-            'ffprobe', '-v', 'error',
-            '-show_entries', 'format=bit_rate',
-            '-of', 'json', filepath
-        ]).decode()
-        _src_kbps = int(_json.loads(_probe)['format'].get('bit_rate', 0)) // 1000
-        if _src_kbps and _src_kbps < 2000 and crf < 28:
-            crf = 28   # prevent inflating low-bitrate sources
-        elif _src_kbps and _src_kbps > 8000 and crf > 24:
-            crf = 22   # high-bitrate source — compress more aggressively
+        out = subprocess.check_output([
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            filepath,
+        ], stderr=subprocess.DEVNULL).decode().strip()
+        return int(float(out))
     except Exception:
         pass
-
-    Crf = f'-crf {crf}'
-
-    # Frame
-    fr = await db.get_frame(message.from_user.id)
-    if fr == 'ntsc':
-        frame = '-r ntsc'
-    elif fr == 'pal':
-        frame = '-r pal'
-    elif fr == 'film':
-        frame = '-r film'
-    elif fr == '23.976':
-        frame = '-r 24000/1001'
-    elif fr == '30':
-        frame = '-r 30'
-    elif fr == '60':
-        frame = '-r 60'
-    else:
-        frame = ''
-
-    # Aspect ratio
-    ap = await db.get_aspect(message.from_user.id)
-    if ap:
-        aspect = '-aspect 16:9'
-    else:
-        aspect = ''
-
-    # Preset
-    p = await db.get_preset(message.from_user.id)
-    if p == 'uf':
-        preset = '-preset ultrafast'
-    elif p == 'sf':
-        preset = '-preset superfast'
-    elif p == 'vf':
-        preset = '-preset veryfast'
-    elif p == 'f':
-        preset = '-preset fast'
-    elif p == 'm':
-        preset = '-preset medium'
-    else:
-        preset = '-preset slow'
-
-    # Some Optional Things
-    x265 = await db.get_hevc(message.from_user.id)
-    if x265:
-        video_opts = f'-profile:v main  -map 0:v? -map_chapters 0 -map_metadata 0'
-    else:
-        video_opts = f'{cabac} {reframe} -profile:v main  -map 0:v? -map_chapters 0 -map_metadata 0'
-
-    # Metadata Watermark
-    m = await db.get_metadata_w(message.from_user.id)
-    if m:
-        metadata = '-metadata title=Cantarellabots -metadata:s:v title=Cantarellabots -metadata:s:a title=Cantarellabots'
-    else:
-        metadata = ''
-
-
-    # ── Subtitle handling ─────────────────────────────────────────
-    # Hardsub  = burn subtitle into video via -vf subtitles= (visible always)
-    # Softsub  = copy subtitle stream alongside video (user can toggle in player)
-    # Both can be active simultaneously — hardsub burns a copy, softsub keeps stream
-    h      = await db.get_hardsub(message.from_user.id)
-    if _force_hardsub:
-        h = True   # external sub was provided — always burn it in
-    s      = await db.get_subtitles(message.from_user.id)
-    subs_i = get_codec(filepath, channel='s:0')
-    has_subs = subs_i not in ([], None, 'pgs')   # pgs = bitmap subs, can't burn
-
-    # Softsub stream copy (independent of hardsub)
-    if s and has_subs:
-        if ex == 'MP4':
-            subtitles = '-c:s mov_text -c:t copy -map 0:t? -map 0:s?'
-        elif ex == 'AVI':
-            subtitles = ''   # AVI has no subtitle container support
-        else:
-            subtitles = '-c:s copy -c:t copy -map 0:t? -map 0:s?'
-    else:
-        subtitles = ''
-
-    # ── -vf filter chain: scale → watermark → hardsub ─────────
-    # Built as a list then joined with commas — clean, no broken string concat
-    vf_filters = []
-
-    r = await db.get_resolution(message.from_user.id)
-    if r == '1080':
-        vf_filters.append('scale=1920:1080')
-    elif r == '720':
-        vf_filters.append('scale=1280:720')
-    elif r == '576':
-        vf_filters.append('scale=768:576')
-    elif r == '480':
-        vf_filters.append('scale=852:480')
-    # OG = source resolution, no scale filter
-
-    w = await db.get_watermark(message.from_user.id)
-    wm_ass = 'bot/encoding/extras/watermark.ass'
-    if w and os.path.isfile(wm_ass):
-        vf_filters.append(f'subtitles={wm_ass}')
-
-    # Hardsub — burn subtitle track into video frames
-    # _force_hardsub = external sub provided, always burn regardless of has_subs
-    if h and (_force_hardsub or has_subs):
-        if subtitles_path and os.path.isfile(subtitles_path):
-            # Use extracted/external .ass — includes custom fonts/styles
-            safe = subtitles_path.replace("'", "\\'").replace(":", "\\:")
-            vf_filters.append(f"subtitles='{safe}'")
-        elif has_subs:
-            # Fallback: burn directly from embedded stream
-            safe_path = filepath.replace("'", "\\'").replace(":", "\\:")
-            vf_filters.append(f"subtitles='{safe_path}':si=0")
-
-    watermark = ('-vf ' + ','.join(vf_filters)) if vf_filters else ''
-
-
-    # Sample rate
-    sr = await db.get_samplerate(message.from_user.id)
-    if sr == '44.1K':
-        sample = '-ar 44100'
-    elif sr == '48K':
-        sample = '-ar 48000'
-    else:
-        sample = ''
-
-    # bit rate
-    bit = await db.get_bitrate(message.from_user.id)
-    if bit == '400':
-        bitrate = '-b:a 400k'
-    elif bit == '320':
-        bitrate = '-b:a 320k'
-    elif bit == '256':
-        bitrate = '-b:a 256k'
-    elif bit == '224':
-        bitrate = '-b:a 224k'
-    elif bit == '192':
-        bitrate = '-b:a 192k'
-    elif bit == '160':
-        bitrate = '-b:a 160k'
-    elif bit == '128':
-        bitrate = '-b:a 128k'
-    else:
-        bitrate = ''
-
-    # Audio
-    a = await db.get_audio(message.from_user.id)
-    a_i = get_codec(filepath, channel='a:0')
-    if a_i == []:
-        audio_opts = ''
-    else:
-        if a == 'dd':
-            audio_opts = f'-c:a ac3 {sample} {bitrate}'
-        elif a == 'aac':
-            audio_opts = f'-c:a aac {sample} {bitrate}'
-        elif a == 'vorbis':
-            audio_opts = f'-c:a libvorbis {sample} {bitrate}'
-        elif a == 'alac':
-            audio_opts = f'-c:a alac {sample} {bitrate}'
-        elif a == 'opus':
-            audio_opts = f'-c:a libopus -vbr on {sample} {bitrate}'
-        else:
-            audio_opts = '-c:a copy'
-
-        if audio_map:
-            # If audio_map is provided (e.g. [0:1, 0:2]), we use it to map audio streams.
-            # We need to make sure we map all audio streams in the desired order.
-            # The audio_opts above sets the codec for all audio streams.
-            # We need to construct the map part.
-            # Note: The previous code had `-map 0:a?` attached to audio_opts.
-            # If we have specific mapping, we shouldn't use generic `-map 0:a?`.
-
-            # The `audio_map` contains indices of audio streams in the original file.
-            # e.g. [1, 2] means map 0:1 then map 0:2.
-
-            map_opts = ""
-            for idx in audio_map:
-                map_opts += f" -map 0:{idx}"
-
-            # Explicitly set the default disposition for the first audio stream in the new order
-            # This ensures the first audio track in the list is the default one
-            disposition_opts = " -disposition:a:0 default"
-
-            audio_opts = f"{audio_opts} {map_opts} {disposition_opts}"
-        else:
-             audio_opts += " -map 0:a?"
-
-
-    # Audio Channel
-    c = await db.get_channels(message.from_user.id)
-    if '-c:a copy' in audio_opts:
-        channels = ''
-    elif c == '1.0':
-        channels = '-rematrix_maxval 1.0 -ac 1'
-    elif c == '2.0':
-        channels = '-rematrix_maxval 1.0 -ac 2'
-    elif c == '2.1':
-        channels = '-rematrix_maxval 1.0 -ac 3'
-    elif c == '5.1':
-        channels = '-rematrix_maxval 1.0 -ac 6'
-    elif c == '7.1':
-        channels = '-rematrix_maxval 1.0 -ac 8'
-    else:
-        channels = ''
-
-    finish = '-threads 8'
-
-    import shlex as _shlex
-    # Finally
-    command = ['ffmpeg', '-hide_banner', '-loglevel', 'error',
-               '-progress', progress, '-hwaccel', 'auto', '-y', '-i', filepath]
-    # Use shlex.split for all args EXCEPT watermark — watermark contains a
-    # quoted subtitles= filter with file paths that must NOT be word-split.
-    # We split watermark manually: extract -vf and its value as two clean args.
-    def _safe_split(s):
-        s = s.strip()
-        if not s:
-            return []
-        try:
-            return _shlex.split(s)
-        except ValueError:
-            return s.split()
-
-    command.extend(
-        _safe_split(codec) + _safe_split(preset) + _safe_split(frame) +
-        _safe_split(tunevideo) + _safe_split(aspect) + _safe_split(video_opts) +
-        _safe_split(Crf) + _safe_split(metadata) + _safe_split(subtitles) +
-        _safe_split(audio_opts) + _safe_split(channels) + _safe_split(finish)
-    )
-    # Add watermark/-vf as separate properly-quoted args
-    if watermark:
-        # watermark is like: '-vf scale=1280:720,subtitles=\'path\''
-        # split only on the first space to get ['-vf', 'filter_value']
-        vf_parts = watermark.split(' ', 1)
-        command.extend(vf_parts)
-
-    proc = await asyncio.create_subprocess_exec(
-        *command, output_filepath,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-
-    # Run progress polling and proc.communicate() concurrently
-    # Previously handle_progress ran BEFORE communicate() which meant
-    # proc.returncode was always None and the loop never saw 'end'
-    stdout_bytes, stderr_bytes = b'', b''
-    async def _wait():
-        nonlocal stdout_bytes, stderr_bytes
-        stdout_bytes, stderr_bytes = await proc.communicate()
-
-    await asyncio.gather(
-        handle_progress(proc, msg, message, filepath, progress, status),
-        _wait(),
-    )
-    stdout, stderr = stdout_bytes, stderr_bytes
-    stdout, stderr = stdout.decode().strip(), stderr.decode().strip()
-    e_response = stderr.decode().strip()
-    t_response = stdout.decode().strip()
-    LOGGER.error(f"FFmpeg stderr: {e_response}")
-    if t_response:
-        LOGGER.info(f"FFmpeg stdout: {t_response}")
-    await proc.communicate()
-
-    if not os.path.isfile(output_filepath) or os.path.getsize(output_filepath) == 0:
-        LOGGER.error(f"Encoding failed: {output_filepath} not created or is 0 bytes.")
-        if os.path.isfile(output_filepath):
-            os.remove(output_filepath)
-        return None
-
-    return output_filepath
-
-
-def get_thumbnail(in_filename, path, ttl):
-    out_filename = os.path.join(path, str(time.time()) + ".jpg")
     try:
-        # ffmpeg -ss <ttl> -i <in_filename> -vframes 1 -y <out_filename>
-        command = [
-            'ffmpeg', '-hide_banner', '-loglevel', 'error',
-            '-ss', str(ttl),
-            '-i', in_filename,
-            '-vframes', '1',
-            '-y', out_filename
-        ]
-        subprocess.run(command, check=True, capture_output=True)
-        if os.path.isfile(out_filename):
-            return out_filename
-        else:
-            LOGGER.warning(f"Thumbnail file not created: {out_filename}")
-            return None
-    except subprocess.CalledProcessError as e:
-        LOGGER.warning(f"Thumbnail generation failed (CalledProcessError): {e.stderr.decode().strip() if e.stderr else e}")
-        return None
-    except Exception as e:
-        LOGGER.warning(f"Thumbnail generation failed: {e}")
-        return None
-
-
-def get_duration(filepath):
-    try:
-        # Try using ffprobe first
-        cmd = [
-            'ffprobe', '-v', 'error', '-show_entries',
-            'format=duration', '-of',
-            'default=noprint_wrappers=1:nokey=1', filepath
-        ]
-        output = subprocess.check_output(cmd).decode('utf-8').strip()
-        return int(float(output))
-    except Exception as e:
-        LOGGER.warning(f"ffprobe duration failed: {e}, falling back to hachoir")
-        try:
-            metadata = extractMetadata(createParser(filepath))
-            if metadata and metadata.has("duration"):
-                return metadata.get('duration').seconds
-        except Exception as e:
-            LOGGER.error(f"hachoir duration failed: {e}")
+        meta = extractMetadata(createParser(filepath))
+        if meta and meta.has("duration"):
+            return meta.get("duration").seconds
+    except Exception:
+        pass
     return 0
 
 
-def get_width_height(filepath):
+def get_width_height(filepath: str) -> tuple[int, int]:
     try:
-        # Try using ffprobe first
-        cmd = [
-            'ffprobe', '-v', 'error', '-select_streams', 'v:0',
-            '-show_entries', 'stream=width,height', '-of',
-            'csv=s=x:p=0', filepath
-        ]
-        output = subprocess.check_output(cmd).decode('utf-8').strip()
-        width, height = map(int, output.split('x'))
-        return width, height
+        out = subprocess.check_output([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "csv=s=x:p=0", filepath,
+        ], stderr=subprocess.DEVNULL).decode().strip()
+        w, h = map(int, out.split("x"))
+        return w, h
+    except Exception:
+        pass
+    try:
+        meta = extractMetadata(createParser(filepath))
+        if meta and meta.has("width") and meta.has("height"):
+            return meta.get("width"), meta.get("height")
+    except Exception:
+        pass
+    return 1280, 720
+
+
+def get_thumbnail(in_filename: str, path: str, ttl: float) -> str | None:
+    out = os.path.join(path, f"{time.time()}.jpg")
+    try:
+        subprocess.run([
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-ss", str(ttl), "-i", in_filename,
+            "-vframes", "1", "-y", out,
+        ], check=True, capture_output=True)
+        return out if os.path.isfile(out) else None
     except Exception as e:
-        LOGGER.warning(f"ffprobe width/height failed: {e}, falling back to hachoir")
+        LOGGER.debug(f"get_thumbnail: {e}")
+        return None
+
+
+async def media_info(filepath: str) -> tuple[int, int | None]:
+    """Return (total_seconds, bitrate_kbps)."""
+    try:
+        proc = subprocess.Popen(
+            ["ffprobe", "-hide_banner", "-i", filepath],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        out, _ = proc.communicate()
+        text   = out.decode()
+        dur    = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.?\d*)", text)
+        btr    = re.search(r"bitrate:\s*(\d+)", text)
+        total  = 0
+        if dur:
+            total = (
+                int(dur.group(1)) * 3600
+                + int(dur.group(2)) * 60
+                + math.floor(float(dur.group(3)))
+            )
+        bitrate = int(btr.group(1)) if btr else None
+        return total, bitrate
+    except Exception:
+        return 0, None
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  SUBTITLE EXTRACTION
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async def extract_subs(filepath: str, msg, user_id: int) -> str | None:
+    check = get_codec(filepath, "s:0")
+    if not check or check == ["pgs"]:
+        return None
+    output = os.path.join(encode_dir, f"{msg.id}.ass")
+    try:
+        subprocess.call(
+            ["ffmpeg", "-y", "-i", filepath, "-map", "s:0", output],
+            stderr=subprocess.DEVNULL,
+        )
+        # Extract embedded fonts (MKV attachments)
         try:
-            metadata = extractMetadata(createParser(filepath))
-            if metadata and metadata.has("width") and metadata.has("height"):
-                return metadata.get("width"), metadata.get("height")
-        except Exception as e:
-            LOGGER.error(f"hachoir width/height failed: {e}")
-    return (1280, 720)
+            ids = [str(i) for i in range(1, 41)]
+            subprocess.call(
+                ["mkvextract", "attachments", filepath] + ids,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            pass
+        # Move extracted fonts to system font cache
+        try:
+            if os.name != "nt":
+                font_exts = "ttf otf woff woff2 ttc fon pfb pfa TTC TTF OTF"
+                globs     = " ".join(f"*.{e}" for e in font_exts.split())
+                subprocess.run(
+                    f"mv -f {globs} /usr/share/fonts/ 2>/dev/null && fc-cache -f 2>/dev/null",
+                    shell=True,
+                )
+        except Exception:
+            pass
+        return output if os.path.isfile(output) else None
+    except Exception as e:
+        LOGGER.error(f"extract_subs: {e}")
+        return None
 
 
-async def media_info(saved_file_path):
-    process = subprocess.Popen(
-        [
-            'ffmpeg',
-            "-hide_banner",
-            '-i',
-            saved_file_path
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  PROGRESS — card renderer
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _bar(pct: float, width: int = 16) -> str:
+    filled = int(width * pct / 100)
+    empty  = width - filled
+    if 0 < filled < width:
+        return "▰" * filled + "▶" + "▱" * (empty - 1)
+    return "▰" * filled + "▱" * empty
+
+
+def _fmt_time(s: float) -> str:
+    s = int(max(s, 0))
+    h, r = divmod(s, 3600)
+    m, s = divmod(r, 60)
+    if h:
+        return f"{h}h {m:02d}m {s:02d}s"
+    if m:
+        return f"{m}m {s:02d}s"
+    return f"{s}s"
+
+
+def _fmt_size(b: int) -> str:
+    if b <= 0:
+        return "0 B"
+    for unit in ("B", "KB", "MB", "GB"):
+        if b < 1024:
+            return f"{b:.1f} {unit}"
+        b /= 1024
+    return f"{b:.1f} TB"
+
+
+def _enc_card(
+    name: str,
+    pct: float,
+    frame: int,
+    fps: float,
+    speed: float,
+    elapsed: float,
+    eta: float,
+    out_size: int,
+    src_size: int,
+    tid: str = "",
+    stage: str = "ENCODING",
+) -> str:
+    wm = getattr(config, "WATERMARK", "@NXT_HUB")
+
+    # Compression ratio line
+    ratio_line = ""
+    if src_size > 0 and out_size > 0:
+        saved   = src_size - out_size
+        pct_red = saved / src_size * 100
+        sign    = "💚 −" if saved >= 0 else "🔴 +"
+        ratio_line = f"\n║  ➤ <b>Saved</b>    :  {sign}{abs(pct_red):.1f}%  ({_fmt_size(abs(saved))})"
+
+    cancel_line = f"\n  ✖ Cancel → <code>/c1_{tid.lower()}</code>" if tid else ""
+
+    return (
+        f"╔═「 ⚙️ <b>{stage}</b> 」\n"
+        f"║\n"
+        f"║  🎬 <b>{name}</b>\n"
+        f"║\n"
+        f"║  <code>{_bar(pct)}</code>  <b>{pct:.1f}%</b>\n"
+        f"║\n"
+        f"╠═「 📊 <b>STATS</b> 」\n"
+        f"║  ➤ <b>Frame</b>   :  {frame:,}  @  {fps:.1f} fps\n"
+        f"║  ➤ <b>Speed</b>   :  {speed:.2f}x  realtime\n"
+        f"║  ➤ <b>ETA</b>     :  {_fmt_time(eta)}\n"
+        f"║  ➤ <b>Elapsed</b> :  {_fmt_time(elapsed)}\n"
+        f"║  ➤ <b>Output</b>  :  {_fmt_size(out_size)}"
+        f"{ratio_line}\n"
+        f"║  ➤ <b>Task</b>    :  <code>#{tid}</code>\n"
+        f"╚══════════════════════"
+        f"{cancel_line}\n"
+        f"  <i>{wm}</i>"
     )
-    stdout, stderr = process.communicate()
-    output = stdout.decode().strip()
-    duration = re.search(r"Duration:\s*(\d*):(\d*):(\d+\.?\d*)[\s\w*$]", output)
-    bitrates = re.search(r"bitrate:\s*(\d+)[\s\w*$]", output)
-
-    if duration is not None:
-        hours = int(duration.group(1))
-        minutes = int(duration.group(2))
-        seconds = math.floor(float(duration.group(3)))
-        total_seconds = (hours * 60 * 60) + (minutes * 60) + seconds
-    else:
-        total_seconds = None
-    if bitrates is not None:
-        bitrate = bitrates.group(1)
-    else:
-        bitrate = None
-    return total_seconds, bitrate
 
 
-async def handle_progress(proc, msg, message, filepath,
-                            progress_file: str, status_file: str):
-    """Poll ffmpeg -progress and show a unified card-style progress bar."""
-    from bot.utils.progress import build_progress_card, safe_edit
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  PROGRESS — ffmpeg pipe reader
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    name               = os.path.basename(filepath)
-    COMPRESSION_START  = time.time()
-    last_card          = ""
+def _parse_kv(line: str, state: dict):
+    """Parse one 'key=value' line from ffmpeg -progress output."""
+    if "=" not in line:
+        return
+    k, _, v = line.partition("=")
+    k, v = k.strip(), v.strip()
+    try:
+        if   k == "frame":       state["frame"]    = int(v)
+        elif k == "fps":         state["fps"]       = float(v)
+        elif k == "speed":
+            state["speed"] = float(v.rstrip("x")) if v not in ("N/A", "0x", "") else 0.0
+        elif k == "out_time_us": state["out_time_s"] = int(v) / 1_000_000
+        elif k == "total_size":  state["out_size"]  = max(int(v), 0)
+        elif k == "progress":    state["done"]      = (v == "end")
+    except (ValueError, ZeroDivisionError):
+        pass
+
+
+async def handle_progress(
+    proc: asyncio.subprocess.Process,
+    msg,
+    message,
+    filepath: str,
+    progress_reader: asyncio.StreamReader,
+    tid: str = "",
+    stage: str = "ENCODING",
+):
+    """
+    Reads ffmpeg -progress pipe:1 line-by-line.
+    Edits the Telegram message every UPDATE_INTERVAL seconds.
+    Cancels ffmpeg if task_manager marks tid as cancelled.
+    """
+    from bot.utils.progress import safe_edit
+    from bot.core import task_manager as tm
+
+    UPDATE_INTERVAL = 5   # seconds between Telegram edits
+
+    name     = os.path.basename(filepath)
+    src_size = os.path.getsize(filepath) if os.path.isfile(filepath) else 0
+    total_s  = get_duration(filepath) or 1
+    start    = time.time()
+    last_upd = 0.0
+
+    state = {
+        "frame": 0, "fps": 0.0, "speed": 0.0,
+        "out_time_s": 0.0, "out_size": 0, "done": False,
+    }
 
     try:
-        with open(status_file, 'w') as f:
-            json.dump({'running': True, 'pid': proc.pid,
-                       'message': msg.id, 'user': message.from_user.id}, f)
+        async for raw in progress_reader:
+            line = raw.decode(errors="replace").strip()
+            _parse_kv(line, state)
+
+            # Respect cancel
+            if tid and tm.is_cancelled(tid):
+                LOGGER.info(f"[Encode] Task {tid} cancelled — killing ffmpeg")
+                try: proc.kill()
+                except Exception: pass
+                return
+
+            if state["done"]:
+                break
+
+            now = time.time()
+            if now - last_upd < UPDATE_INTERVAL:
+                continue
+            last_upd = now
+
+            elapsed   = now - start
+            pct       = min(state["out_time_s"] * 100 / total_s, 99.5)
+            speed     = state["speed"]
+            remaining = (total_s - state["out_time_s"]) / speed if speed > 0 else 0
+
+            await safe_edit(msg, _enc_card(
+                name=name, pct=pct,
+                frame=state["frame"], fps=state["fps"], speed=speed,
+                elapsed=elapsed, eta=remaining,
+                out_size=state["out_size"], src_size=src_size,
+                tid=tid, stage=stage,
+            ))
+
+    except asyncio.CancelledError:
+        try: proc.kill()
+        except Exception: pass
+        raise
+    except Exception as e:
+        LOGGER.debug(f"handle_progress loop: {e}")
+
+    # Final 100% card
+    elapsed = time.time() - start
+    await safe_edit(msg, _enc_card(
+        name=name, pct=100.0,
+        frame=state["frame"], fps=state["fps"], speed=state["speed"],
+        elapsed=elapsed, eta=0,
+        out_size=state["out_size"], src_size=src_size,
+        tid=tid, stage=stage,
+    ))
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  BUILD FFMPEG COMMAND
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async def _build_cmd(filepath: str, output: str, uid: int, subtitles_path: str, force_hardsub: bool) -> list[str]:
+    """Assemble the full ffmpeg command list."""
+
+    def spl(s: str) -> list[str]:
+        s = s.strip()
+        return shlex.split(s) if s else []
+
+    # ── Codec ─────────────────────────────────────────────────
+    x265   = await db.get_hevc(uid)
+    v_info = get_codec(filepath, "v:0")
+    codec  = ("-c:v libx265" if x265 else "-c:v libx264") if v_info else ""
+    bits   = await db.get_bits(uid)
+    codec += " -pix_fmt yuv420p10le" if bits else " -pix_fmt yuv420p"
+
+    # ── CRF with bitrate-aware auto-adjust ────────────────────
+    crf = int(await db.get_crf(uid) or 26)
+    try:
+        probe    = subprocess.check_output([
+            "ffprobe", "-v", "error", "-show_entries", "format=bit_rate",
+            "-of", "json", filepath,
+        ], stderr=subprocess.DEVNULL).decode()
+        src_kbps = int(json.loads(probe)["format"].get("bit_rate", 0)) // 1000
+        if src_kbps and src_kbps < 2000 and crf < 28:
+            crf = 28   # low-bitrate source — avoid bloat
+        elif src_kbps and src_kbps > 8000 and crf > 24:
+            crf = 22   # high-bitrate source — compress more
     except Exception:
         pass
 
-    total_time, _ = await media_info(filepath)
-    if not total_time or total_time <= 0:
-        total_time = 1
+    # ── Preset ────────────────────────────────────────────────
+    preset_map = {
+        "uf": "ultrafast", "sf": "superfast", "vf": "veryfast",
+        "f":  "fast",      "m":  "medium",
+    }
+    preset = f"-preset {preset_map.get(await db.get_preset(uid), 'slow')}"
 
-    while proc.returncode is None:
-        await asyncio.sleep(4)
-        try:
-            with open(progress_file, 'r') as file:
-                text = file.read()
-        except Exception:
-            continue
+    # ── Tune ──────────────────────────────────────────────────
+    tune      = await db.get_tune(uid)
+    tunevideo = "-tune animation" if tune else "-tune film"
 
-        time_in_us = re.findall(r"out_time_ms=(\d+)", text)
-        speed_list = re.findall(r"speed=(\d+\.?\d*)", text)
-        prog_list  = re.findall(r"progress=(\w+)", text)
+    # ── x264-only: CABAC + ref frames ─────────────────────────
+    cabac   = "-coder 1" if await db.get_cabac(uid) else "-coder 0"
+    rf      = await db.get_reframe(uid)
+    reframe = f"-refs {rf}" if rf in ("4", "8", "16") else ""
 
-        elapsed_enc   = time.time() - COMPRESSION_START
-        elapsed_media = int(time_in_us[-1]) / 1_000_000 if time_in_us else 0
-        speed_val     = float(speed_list[-1]) if speed_list else 0.0
+    if x265:
+        video_opts = "-profile:v main -map 0:v? -map_chapters 0 -map_metadata 0"
+    else:
+        video_opts = f"{cabac} {reframe} -profile:v main -map 0:v? -map_chapters 0 -map_metadata 0"
 
-        if prog_list and prog_list[-1] == "end":
-            # 100% complete — show filled bar then hand off to upload
-            await safe_edit(
-                msg,
-                build_progress_card(
-                    "encoding", name, 100.0,
-                    enc_speed=speed_val, elapsed=elapsed_enc, eta=0,
-                ),
-            )
-            break
+    # ── Frame rate ────────────────────────────────────────────
+    fr_map = {
+        "ntsc": "ntsc", "pal": "pal", "film": "film",
+        "23.976": "24000/1001", "30": "30", "60": "60",
+    }
+    fr    = await db.get_frame(uid)
+    frame = f"-r {fr_map[fr]}" if fr in fr_map else ""
 
-        pct     = min(elapsed_media * 100 / total_time, 99.0)
-        eta_sec = (total_time - elapsed_media) / speed_val if speed_val > 0 else 0
+    # ── Aspect ────────────────────────────────────────────────
+    aspect = "-aspect 16:9" if await db.get_aspect(uid) else ""
 
-        card = build_progress_card(
-            "encoding", name, pct,
-            enc_speed=speed_val, elapsed=elapsed_enc, eta=eta_sec,
-        )
-        if card == last_card:
-            continue
-        last_card = card
-        await safe_edit(msg, card)
+    # ── Metadata watermark ────────────────────────────────────
+    wm = getattr(config, "WATERMARK", "@NXT_HUB").lstrip("@")
+    meta_flag = await db.get_metadata_w(uid)
+    metadata  = (
+        f"-metadata title={wm} -metadata:s:v title={wm} -metadata:s:a title={wm}"
+        if meta_flag else ""
+    )
+
+    # ── Subtitle soft-copy ────────────────────────────────────
+    ex       = await db.get_extensions(uid)
+    s        = await db.get_subtitles(uid)
+    subs_i   = get_codec(filepath, "s:0")
+    has_subs = bool(subs_i) and subs_i != ["pgs"]
+    if s and has_subs:
+        if   ex == "MP4": subtitles = "-c:s mov_text -c:t copy -map 0:t? -map 0:s?"
+        elif ex == "AVI": subtitles = ""
+        else:             subtitles = "-c:s copy -c:t copy -map 0:t? -map 0:s?"
+    else:
+        subtitles = ""
+
+    # ── -vf filter chain ──────────────────────────────────────
+    vf = []
+    res_map = {
+        "1080": "scale=1920:1080", "720": "scale=1280:720",
+        "576":  "scale=768:576",   "480": "scale=852:480",
+    }
+    r = await db.get_resolution(uid)
+    if r in res_map:
+        vf.append(res_map[r])
+
+    wm_ass = "bot/encoding/extras/watermark.ass"
+    if await db.get_watermark(uid) and os.path.isfile(wm_ass):
+        vf.append(f"subtitles={wm_ass}")
+
+    h = await db.get_hardsub(uid)
+    if force_hardsub:
+        h = True
+    if h and subtitles_path and os.path.isfile(subtitles_path):
+        safe = subtitles_path.replace("'", "\\'").replace(":", "\\:")
+        vf.append(f"subtitles='{safe}'")
+    elif h and has_subs:
+        safe = filepath.replace("'", "\\'").replace(":", "\\:")
+        vf.append(f"subtitles='{safe}':si=0")
+
+    # ── Audio ─────────────────────────────────────────────────
+    sr_map  = {"44.1K": "-ar 44100", "48K": "-ar 48000"}
+    bit_map = {
+        "400": "-b:a 400k", "320": "-b:a 320k", "256": "-b:a 256k",
+        "224": "-b:a 224k", "192": "-b:a 192k", "160": "-b:a 160k",
+        "128": "-b:a 128k",
+    }
+    sample  = sr_map.get(await db.get_samplerate(uid), "")
+    bitrate = bit_map.get(await db.get_bitrate(uid), "")
+
+    a     = await db.get_audio(uid)
+    a_i   = get_codec(filepath, "a:0")
+    acodec_map = {
+        "dd":     f"-c:a ac3 {sample} {bitrate}",
+        "aac":    f"-c:a aac {sample} {bitrate}",
+        "vorbis": f"-c:a libvorbis {sample} {bitrate}",
+        "alac":   f"-c:a alac {sample} {bitrate}",
+        "opus":   f"-c:a libopus -vbr on {sample} {bitrate}",
+    }
+    audio_opts = acodec_map.get(a, "-c:a copy") if a_i else ""
+    audio_opts += " -map 0:a?"
+
+    ch_map = {
+        "1.0": "-rematrix_maxval 1.0 -ac 1", "2.0": "-rematrix_maxval 1.0 -ac 2",
+        "2.1": "-rematrix_maxval 1.0 -ac 3", "5.1": "-rematrix_maxval 1.0 -ac 6",
+        "7.1": "-rematrix_maxval 1.0 -ac 8",
+    }
+    channels = "" if "-c:a copy" in audio_opts else ch_map.get(await db.get_channels(uid), "")
+
+    # ── Assemble ──────────────────────────────────────────────
+    cmd = [
+        "ffmpeg", "-hide_banner",
+        "-loglevel", "error",
+        "-progress", "pipe:1",   # progress stream → stdout
+        "-hwaccel", "auto",
+        "-y", "-i", filepath,
+    ]
+    cmd += (
+        spl(codec) + spl(f"-crf {crf}") + spl(preset) +
+        spl(frame) + spl(tunevideo) + spl(aspect) +
+        spl(video_opts) + spl(metadata) + spl(subtitles) +
+        spl(audio_opts) + spl(channels) +
+        ["-threads", "8"]
+    )
+    if vf:
+        cmd += ["-vf", ",".join(vf)]
+    cmd.append(output)
+    return cmd
 
 
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  PUBLIC ENCODE ENTRY POINT
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async def encode(
+    filepath: str,
+    message,
+    msg,
+    audio_map:    list | None = None,
+    external_sub: str  | None = None,
+    tid:          str         = "",
+) -> str | None:
+    """
+    Encode `filepath` with the user's saved settings.
+    Returns path to encoded file, or None on failure.
+    """
+    os.makedirs(encode_dir, exist_ok=True)
+
+    uid     = message.from_user.id
+    ex      = await db.get_extensions(uid)
+    name    = os.path.splitext(os.path.basename(filepath))[0]
+    out_ext = {"MP4": ".mp4", "AVI": ".avi"}.get(ex, ".mkv")
+    output  = os.path.join(encode_dir, name + out_ext)
+
+    assert output != filepath, "Input and output are the same file!"
+
+    # ── Subtitle preparation ──────────────────────────────────
+    force_hardsub = False
+    sub_path      = None
+
+    if external_sub and os.path.isfile(external_sub):
+        sub_path      = external_sub
+        force_hardsub = True
+        LOGGER.info(f"[Encode] External sub: {external_sub}")
+    else:
+        sub_path = await extract_subs(filepath, msg, uid)
+
+    # ── Handle custom audio mapping ───────────────────────────
+    # audio_map is applied separately — patch audio_opts after build
+    cmd = await _build_cmd(filepath, output, uid, sub_path or "", force_hardsub)
+
+    if audio_map:
+        # Replace generic '-map 0:a?' with specific stream maps + default disposition
+        cmd = [c for c in cmd if c != "-map 0:a?"]   # remove generic audio map flag
+        # find index of audio codec flag and insert maps after it
+        map_args     = [arg for idx in audio_map for arg in ["-map", f"0:{idx}"]]
+        disp_args    = ["-disposition:a:0", "default"]
+        # append before output file (last element)
+        output_file  = cmd.pop()
+        cmd          += map_args + disp_args + [output_file]
+
+    LOGGER.info(f"[Encode] Starting: {' '.join(cmd)}")
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,   # -progress pipe:1 lands here
+        stderr=asyncio.subprocess.PIPE,   # errors only
+    )
+
+    # Drain stderr (errors) + read progress from stdout concurrently
+    async def _drain_stderr():
+        _, err = await proc.communicate()
+        if err:
+            decoded = err.decode(errors="replace").strip()
+            if decoded:
+                LOGGER.error(f"[Encode] ffmpeg: {decoded[:600]}")
+
+    await asyncio.gather(
+        handle_progress(
+            proc, msg, message, filepath,
+            proc.stdout, tid=tid,
+        ),
+        _drain_stderr(),
+    )
+
+    # ── Validate output ───────────────────────────────────────
+    if not os.path.isfile(output) or os.path.getsize(output) == 0:
+        LOGGER.error(f"[Encode] Output missing or empty: {output}")
+        try:    os.remove(output)
+        except: pass
+        return None
+
+    in_sz  = os.path.getsize(filepath)
+    out_sz = os.path.getsize(output)
+    ratio  = out_sz / in_sz * 100 if in_sz else 0
+    LOGGER.info(
+        f"[Encode] ✅ {output} | "
+        f"{in_sz//1024//1024} MB → {out_sz//1024//1024} MB ({ratio:.1f}%)"
+    )
+    return output

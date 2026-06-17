@@ -1,52 +1,47 @@
 """
-Encode handler — NXT_HUB v5
-
-Step order for /encsub:
-  1. /encsub → bot asks for video
-  2. User sends video → bot downloads WITH progress bar → asks for subtitle
-  3. User sends subtitle → bot downloads subtitle → converts → encodes WITH progress → uploads
-
+encode.py — Encode command handlers  (full rewrite)
+====================================================
 Commands:
-  /encode        — reply to a video file to encode it
-  /encurl <url>  — download URL and encode
-  /encsub        — interactive: video first, then subtitle, then encode
-  /encsub <v_url> <s_url> — both as URLs
-  /encset        — open encoding settings panel
-  /vset          — view current encode settings
+  /encode        reply to a video → encode it
+  /encurl <url>  download URL → encode
+  /encsub        interactive: send subtitle → send video → hardsub encode
+  /encsub <v_url> <s_url>  both as URLs in one command
+  /encset        open encode settings panel
+  /vset          view current settings summary
 """
+import asyncio
 import os
 import re
 import time
-import asyncio
 
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message
 
 import config
 from bot.handlers._auth import auth_required
-from bot.database import users_db
 from bot.encoding.helper import handle_encode
 
-# ── State ─────────────────────────────────────────────────────
-_encsub_state:   dict[int, dict]         = {}
-_encsub_timeout: dict[int, asyncio.Task] = {}
-
+# ── Constants ─────────────────────────────────────────────────
 SUB_EXTS   = {".srt", ".ass", ".ssa", ".vtt", ".sub"}
 VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".mov", ".ts", ".m4v", ".flv", ".webm", ".wmv"}
-SEP        = "━━━━━━━━━━━━━━━━━━━━━━━━"
+_SEP       = "━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# ── /encsub step state ─────────────────────────────────────────
+_state:   dict[int, dict]         = {}
+_timers:  dict[int, asyncio.Task] = {}
 
 
-def _cancel_encsub(uid: int):
-    t = _encsub_timeout.pop(uid, None)
+def _cancel_state(uid: int):
+    t = _timers.pop(uid, None)
     if t and not t.done():
         t.cancel()
-    _encsub_state.pop(uid, None)
+    _state.pop(uid, None)
 
 
-async def _encsub_expire(uid: int, msg, secs: int = 120):
+async def _expire(uid: int, msg, secs: int = 120):
     await asyncio.sleep(secs)
-    if uid in _encsub_state:
-        _encsub_state.pop(uid, None)
+    if uid in _state:
+        _state.pop(uid, None)
         try:
             await msg.edit_text(
                 "⏰ <b>Timed out.</b> Send /encsub to start again.",
@@ -56,263 +51,65 @@ async def _encsub_expire(uid: int, msg, secs: int = 120):
             pass
 
 
-def _clean_name(fname: str) -> str:
-    """Strip UUID-style names from Telegram file hashes."""
-    name = os.path.splitext(fname)[0]
-    if re.match(r'^[0-9a-f]{20,}', name):
-        return "video"
-    return name[:40]
+def _safe_name(fname: str) -> str:
+    n = os.path.splitext(fname)[0]
+    return "video" if re.match(r"^[0-9a-f]{20,}", n) else n[:48]
 
 
-# ── Download from Telegram with live progress bar ─────────────
+# ── Telegram download with live progress bar ───────────────────
 
-async def _dl_tg_with_progress(client, file_id: str, dest: str, msg, label: str) -> str:
-    """Download a Telegram file showing a live card-style progress bar."""
+async def _dl_tg(client, media, dest: str, msg, label: str) -> str:
     from bot.utils.progress import build_progress_card, safe_edit
+    last  = [0.0]
+    start = [time.monotonic()]
 
-    last_edit  = [0.0]
-    start_time = [time.monotonic()]
-
-    async def _progress(current, total):
+    async def _cb(cur, total):
         now = time.monotonic()
-        if now - last_edit[0] < 3.0:
+        if now - last[0] < 3.0:
             return
-        elapsed = now - start_time[0]
-        speed   = current / max(elapsed, 0.001)
-        eta     = (total - current) / speed if speed > 0 and total > current else 0
-        pct     = (current / total * 100) if total else 0
+        elapsed = now - start[0]
+        speed   = cur / max(elapsed, 0.001)
+        eta     = (total - cur) / speed if speed > 0 and total > cur else 0
         await safe_edit(
             msg,
             build_progress_card(
-                "downloading", label, pct,
-                done=current, total=total,
-                speed=speed, eta=eta, elapsed=elapsed,
+                "downloading", label, cur * 100 / total if total else 0,
+                done=cur, total=total, speed=speed, eta=eta, elapsed=elapsed,
             ),
         )
-        last_edit[0] = now
+        last[0] = now
 
-    await client.download_media(file_id, file_name=dest, progress=_progress)
+    fid = media.file_id if hasattr(media, "file_id") else media
+    await client.download_media(fid, file_name=dest, progress=_cb)
     return dest
 
 
-# ── SRT/VTT → ASS conversion ──────────────────────────────────
+# ── SRT/VTT/SUB → ASS ────────────────────────────────────────
 
 async def _to_ass(src: str, dest_dir: str) -> str:
-    name = os.path.splitext(os.path.basename(src))[0]
-    out  = os.path.join(dest_dir, name + ".ass")
+    out  = os.path.join(dest_dir, os.path.splitext(os.path.basename(src))[0] + ".ass")
     proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-        "-i", src, out,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", src, out,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
     )
-    await proc.communicate()
+    await proc.wait()
     return out if os.path.isfile(out) else src
 
 
-# ══════════════════════════════════════════════════════════════
-#  /encsub
-# ══════════════════════════════════════════════════════════════
+# ── Card helpers ──────────────────────────────────────────────
 
-@Client.on_message(filters.command("encsub") & (filters.private | filters.group))
-async def cmd_encsub(client: Client, message: Message):
-    if not await auth_required(message):
-        return
-
-    uid   = message.from_user.id
-    parts = message.text.split(None, 3)
-
-    # ── Flow C: /encsub <video_url> <sub_url> ─────────────────
-    if len(parts) >= 3:
-        video_url = parts[1].strip()
-        sub_url   = parts[2].strip()
-        msg = await message.reply_text(
-            f"<b>{SEP}</b>\n<b>📥  Downloading Video…</b>\n<b>{SEP}</b>",
-            parse_mode=enums.ParseMode.HTML,
-        )
-        try:
-            from bot.core.downloader import http_download, ytdlp_download
-            from bot.utils.direct_links import resolve
-
-            work_dir = os.path.join(config.DOWNLOAD_DIR, f"encsub_{message.id}")
-            os.makedirs(work_dir, exist_ok=True)
-
-            info = await resolve(video_url)
-            tid  = f"encsub_v_{message.id}"
-            if info["use_ytdlp"]:
-                video_path = await ytdlp_download(info["url"], work_dir, tid, msg, uid)
-            else:
-                video_path = await http_download(info["url"], work_dir, tid, msg)
-
-            await msg.edit_text(
-                f"<b>{SEP}</b>\n<b>📥  Downloading Subtitle…</b>\n<b>{SEP}</b>",
-                parse_mode=enums.ParseMode.HTML,
-            )
-            sub_path = await http_download(sub_url, work_dir, f"encsub_s_{message.id}", msg)
-            sub_path = await _to_ass(sub_path, work_dir)
-
-            await msg.edit_text("⚙️ <b>Starting encode…</b>", parse_mode=enums.ParseMode.HTML)
-            await handle_encode(video_path, message, msg, external_sub=sub_path)
-
-        except Exception as e:
-            await msg.edit_text(
-                f"❌ <b>Error:</b>\n<code>{e}</code>",
-                parse_mode=enums.ParseMode.HTML,
-            )
-        return
-
-    # ── Flow A: step-by-step — ask subtitle FIRST, then video ──
-    _cancel_encsub(uid)
-    work_dir = os.path.join(config.DOWNLOAD_DIR, f"encsub_{uid}_{message.id}")
-    os.makedirs(work_dir, exist_ok=True)
-    _encsub_state[uid] = {"step": "sub_first", "work_dir": work_dir}
-
-    prompt = await message.reply_text(
-        f"<b>{SEP}</b>\n"
-        f"<b>📄  Step 1 / 2 — Send Subtitle</b>\n"
-        f"<b>{SEP}</b>\n\n"
-        f"Send your subtitle file first.\n"
-        f"Supported: <code>.srt  .ass  .ssa  .vtt  .sub</code>\n\n"
-        f"<i>⏳ Waiting 2 minutes…</i>",
-        parse_mode=enums.ParseMode.HTML,
-    )
-    _encsub_timeout[uid] = asyncio.ensure_future(_encsub_expire(uid, prompt, 120))
-
-
-# ── Step 1: receive subtitle ─────────────────────────────────
-
-@Client.on_message(filters.document & (filters.private | filters.group), group=3)
-async def encsub_receive_sub_first(client: Client, message: Message):
-    if not message.from_user:
-        return
-    uid   = message.from_user.id
-    state = _encsub_state.get(uid)
-    if not state or state["step"] != "sub_first":
-        return
-
-    doc   = message.document
-    fname = doc.file_name or "subtitle.srt"
-    ext   = os.path.splitext(fname)[1].lower()
-
-    if ext not in SUB_EXTS:
-        await message.reply_text(
-            f"❌ Unsupported format <code>{ext}</code>\n"
-            f"Accepted: {' '.join(sorted(SUB_EXTS))}",
-            parse_mode=enums.ParseMode.HTML,
-        )
-        return
-
-    _cancel_encsub(uid)
-    work_dir   = state["work_dir"]
-    sub_name   = os.path.splitext(fname)[0]
-
-    # Store subtitle file_id — download later together with video
-    _encsub_state[uid] = {
-        "step":      "video_after_sub",
-        "work_dir":  work_dir,
-        "sub_fid":   doc.file_id,
-        "sub_fname": fname,
-    }
-
-    msg = await message.reply_text(
-        f"<b>{SEP}</b>\n"
-        f"<b>✅  Subtitle received!</b>\n"
-        f"<b>{SEP}</b>\n\n"
-        f"📄 <code>{sub_name}</code>\n\n"
-        f"<b>🎬  Step 2 / 2 — Send Video</b>\n\n"
-        f"Now send the video file to encode.\n"
-        f"Supported: <code>.mkv  .mp4  .avi  .mov  .ts</code>\n\n"
-        f"<i>⏳ Waiting 2 minutes…</i>",
-        parse_mode=enums.ParseMode.HTML,
-    )
-    _encsub_state[uid]["msg"] = msg
-    _encsub_timeout[uid] = asyncio.ensure_future(_encsub_expire(uid, msg, 120))
-
-
-# ── Step 2: receive video → download both → encode ────────────
-
-@Client.on_message(
-    (filters.video | filters.document) & (filters.private | filters.group),
-    group=4,
-)
-async def encsub_receive_video_after_sub(client: Client, message: Message):
-    if not message.from_user:
-        return
-    uid   = message.from_user.id
-    state = _encsub_state.get(uid)
-    if not state or state["step"] != "video_after_sub":
-        return
-
-    media = message.video or message.document
-    if not media:
-        return
-
-    fname = getattr(media, "file_name", None) or "video.mkv"
-    ext   = os.path.splitext(fname)[1].lower()
-
-    # If it's a document, make sure it's a video not another subtitle
-    if message.document and ext not in VIDEO_EXTS:
-        return
-
-    _cancel_encsub(uid)
-    work_dir   = state["work_dir"]
-    sub_fid    = state["sub_fid"]
-    sub_fname  = state["sub_fname"]
-    msg        = state.get("msg")
-    clean_name = _clean_name(fname)
-    sub_name   = os.path.splitext(sub_fname)[0]
-    _encsub_state.pop(uid, None)
-
-    if not msg:
-        msg = await message.reply_text("⚙️ Processing…", parse_mode=enums.ParseMode.HTML)
-
-    # ── Download both simultaneously ──────────────────────────
-    await msg.edit_text(
-        f"<b>{SEP}</b>\n"
-        f"<b>📥  Downloading Both Files…</b>\n"
-        f"<b>{SEP}</b>\n\n"
-        f"🎬 <code>{clean_name}</code>\n"
-        f"📄 <code>{sub_name}</code>\n\n"
-        f"<i>Starting downloads…</i>",
-        parse_mode=enums.ParseMode.HTML,
+def _card(title: str, body: str) -> str:
+    return (
+        f"<b>{_SEP}</b>\n"
+        f"<b>{title}</b>\n"
+        f"<b>{_SEP}</b>\n\n"
+        f"{body}"
     )
 
-    video_dest = os.path.join(work_dir, fname)
-    sub_dest   = os.path.join(work_dir, sub_fname)
 
-    # Download video and subtitle in parallel
-    await asyncio.gather(
-        client.download_media(media.file_id, file_name=video_dest),
-        client.download_media(sub_fid,       file_name=sub_dest),
-    )
-
-    # Verify both
-    if not os.path.isfile(video_dest):
-        await msg.edit_text("❌ Video download failed.", parse_mode=enums.ParseMode.HTML)
-        return
-    if not os.path.isfile(sub_dest):
-        await msg.edit_text("❌ Subtitle download failed.", parse_mode=enums.ParseMode.HTML)
-        return
-
-    # Convert subtitle to .ass
-    sub_ass = await _to_ass(sub_dest, work_dir)
-
-    await msg.edit_text(
-        f"<b>{SEP}</b>\n"
-        f"<b>⚙️  Starting Encode</b>\n"
-        f"<b>{SEP}</b>\n\n"
-        f"🎬 <code>{clean_name}</code>\n"
-        f"📄 <code>{sub_name}</code>\n\n"
-        f"<i>Burning hardsub…</i>",
-        parse_mode=enums.ParseMode.HTML,
-    )
-
-    await handle_encode(video_dest, message, msg, external_sub=sub_ass)
-
-
-# ══════════════════════════════════════════════════════════════
-#  /encode — reply to video (optionally with subtitle attached)
-# ══════════════════════════════════════════════════════════════
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  /encode
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @Client.on_message(filters.command("encode") & (filters.private | filters.group))
 async def cmd_encode(client: Client, message: Message):
@@ -320,58 +117,56 @@ async def cmd_encode(client: Client, message: Message):
         return
 
     replied = message.reply_to_message
-    if not (replied and (replied.video or replied.document)):
+    if not replied or not (replied.video or replied.document):
         await message.reply_text(
-            "❌ Reply to a video/document with <code>/encode</code>.\n\n"
-            "To use an external subtitle: <code>/encsub</code>",
+            "❌ Reply to a video / document with <code>/encode</code>.\n\n"
+            "For external subtitle → use <code>/encsub</code>",
             parse_mode=enums.ParseMode.HTML,
         )
         return
 
     msg = await message.reply_text(
-        f"<b>{SEP}</b>\n<b>📥  Downloading Video…</b>\n<b>{SEP}</b>",
+        _card("📥  Downloading Video…", "Please wait…"),
         parse_mode=enums.ParseMode.HTML,
     )
     try:
-        media      = replied.video or replied.document
-        fname      = getattr(media, "file_name", None) or f"video_{message.id}.mkv"
-        work_dir   = os.path.join(config.DOWNLOAD_DIR, f"enc_{message.id}")
+        media    = replied.video or replied.document
+        fname    = getattr(media, "file_name", None) or f"video_{message.id}.mkv"
+        work_dir = os.path.join(config.DOWNLOAD_DIR, f"enc_{message.id}")
         os.makedirs(work_dir, exist_ok=True)
-        dest       = os.path.join(work_dir, fname)
+        dest     = os.path.join(work_dir, fname)
 
-        await _dl_tg_with_progress(client, replied, dest, msg, "DOWNLOADING VIDEO")
+        await _dl_tg(client, media, dest, msg, _safe_name(fname))
 
         if not os.path.isfile(dest):
-            await msg.edit_text("❌ Download failed.", parse_mode=enums.ParseMode.HTML)
-            return
+            return await msg.edit_text("❌ Download failed.", parse_mode=enums.ParseMode.HTML)
 
-        # Check if subtitle attached to /encode message itself
+        # Optional subtitle attached directly to /encode message
         external_sub = None
         if message.document:
-            sub_fname = message.document.file_name or ""
-            if os.path.splitext(sub_fname)[1].lower() in SUB_EXTS:
+            sfname = message.document.file_name or ""
+            if os.path.splitext(sfname)[1].lower() in SUB_EXTS:
                 await msg.edit_text(
-                    f"<b>{SEP}</b>\n<b>📥  Downloading Subtitle…</b>\n<b>{SEP}</b>",
+                    _card("📥  Downloading Subtitle…", "Please wait…"),
                     parse_mode=enums.ParseMode.HTML,
                 )
-                sub_dest = os.path.join(work_dir, sub_fname)
-                await _dl_tg_with_progress(client, message.document.file_id, sub_dest, msg, "DOWNLOADING SUBTITLE")
-                if os.path.isfile(sub_dest):
-                    external_sub = await _to_ass(sub_dest, work_dir)
+                sdest = os.path.join(work_dir, sfname)
+                await _dl_tg(client, message.document, sdest, msg, _safe_name(sfname))
+                if os.path.isfile(sdest):
+                    external_sub = await _to_ass(sdest, work_dir)
 
         await msg.edit_text("⚙️ <b>Starting encode…</b>", parse_mode=enums.ParseMode.HTML)
         await handle_encode(dest, message, msg, external_sub=external_sub)
 
     except Exception as e:
         await msg.edit_text(
-            f"❌ <b>Encode error:</b>\n<code>{e}</code>",
-            parse_mode=enums.ParseMode.HTML,
+            f"❌ <b>Error:</b>\n<code>{e}</code>", parse_mode=enums.ParseMode.HTML
         )
 
 
-# ══════════════════════════════════════════════════════════════
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  /encurl
-# ══════════════════════════════════════════════════════════════
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @Client.on_message(filters.command("encurl") & (filters.private | filters.group))
 async def cmd_encurl(client: Client, message: Message):
@@ -380,30 +175,31 @@ async def cmd_encurl(client: Client, message: Message):
 
     parts = message.text.split(None, 2)
     if len(parts) < 2:
-        await message.reply_text(
+        return await message.reply_text(
             "❌ Usage: <code>/encurl &lt;url&gt; [filename]</code>",
             parse_mode=enums.ParseMode.HTML,
         )
-        return
 
     url      = parts[1].strip()
     filename = parts[2].strip() if len(parts) > 2 else None
-
-    msg = await message.reply_text(
-        f"<b>{SEP}</b>\n<b>📥  Downloading…</b>\n<b>{SEP}</b>",
+    msg      = await message.reply_text(
+        _card("📥  Downloading…", f"<code>{url[:80]}</code>"),
         parse_mode=enums.ParseMode.HTML,
     )
-    try:
-        from bot.core.downloader import http_download, ytdlp_download
-        from bot.utils.direct_links import resolve
 
-        dest_dir = os.path.join(config.DOWNLOAD_DIR, f"enc_url_{message.id}")
+    try:
+        from bot.utils.direct_links import resolve
+        from bot.downloaders.ytdlp_downloader import ytdlp_download
+        from bot.downloaders.http_downloader  import http_download
+
+        uid      = message.from_user.id
+        dest_dir = os.path.join(config.DOWNLOAD_DIR, f"encurl_{message.id}")
         os.makedirs(dest_dir, exist_ok=True)
+        tid      = f"encurl_{message.id}"
 
         info = await resolve(url)
-        tid  = f"encurl_{message.id}"
         if info["use_ytdlp"]:
-            filepath = await ytdlp_download(info["url"], dest_dir, tid, msg, message.from_user.id)
+            filepath = await ytdlp_download(info["url"], dest_dir, tid, msg, uid)
         else:
             filepath = await http_download(info["url"], dest_dir, tid, msg)
 
@@ -414,18 +210,194 @@ async def cmd_encurl(client: Client, message: Message):
             filepath = new_path
 
         await msg.edit_text("⚙️ <b>Starting encode…</b>", parse_mode=enums.ParseMode.HTML)
-        await handle_encode(filepath, message, msg)
+        await handle_encode(filepath, message, msg, tid=tid)
 
     except Exception as e:
         await msg.edit_text(
-            f"❌ <b>Error:</b>\n<code>{e}</code>",
-            parse_mode=enums.ParseMode.HTML,
+            f"❌ <b>Error:</b>\n<code>{e}</code>", parse_mode=enums.ParseMode.HTML
         )
 
 
-# ══════════════════════════════════════════════════════════════
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  /encsub  (interactive 2-step: subtitle first → video)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@Client.on_message(filters.command("encsub") & (filters.private | filters.group))
+async def cmd_encsub(client: Client, message: Message):
+    if not await auth_required(message):
+        return
+
+    uid   = message.from_user.id
+    parts = message.text.split(None, 3)
+
+    # ── URL mode: /encsub <video_url> <sub_url> ───────────────
+    if len(parts) >= 3:
+        video_url = parts[1].strip()
+        sub_url   = parts[2].strip()
+        msg = await message.reply_text(
+            _card("📥  Downloading Video…", f"<code>{video_url[:80]}</code>"),
+            parse_mode=enums.ParseMode.HTML,
+        )
+        try:
+            from bot.utils.direct_links import resolve
+            from bot.downloaders.ytdlp_downloader import ytdlp_download
+            from bot.downloaders.http_downloader  import http_download
+
+            uid_str  = str(message.from_user.id)
+            work_dir = os.path.join(config.DOWNLOAD_DIR, f"encsub_{message.id}")
+            os.makedirs(work_dir, exist_ok=True)
+            tid      = f"encsub_{message.id}"
+
+            info = await resolve(video_url)
+            if info["use_ytdlp"]:
+                vpath = await ytdlp_download(info["url"], work_dir, tid, msg, message.from_user.id)
+            else:
+                vpath = await http_download(info["url"], work_dir, tid, msg)
+
+            await msg.edit_text(
+                _card("📥  Downloading Subtitle…", f"<code>{sub_url[:80]}</code>"),
+                parse_mode=enums.ParseMode.HTML,
+            )
+            spath    = await http_download(sub_url, work_dir, tid + "_s", msg)
+            sub_ass  = await _to_ass(spath, work_dir)
+
+            await msg.edit_text("⚙️ <b>Starting encode…</b>", parse_mode=enums.ParseMode.HTML)
+            await handle_encode(vpath, message, msg, external_sub=sub_ass, tid=tid)
+        except Exception as e:
+            await msg.edit_text(
+                f"❌ <b>Error:</b>\n<code>{e}</code>", parse_mode=enums.ParseMode.HTML
+            )
+        return
+
+    # ── Interactive mode: ask for subtitle ────────────────────
+    _cancel_state(uid)
+    work_dir = os.path.join(config.DOWNLOAD_DIR, f"encsub_{uid}_{message.id}")
+    os.makedirs(work_dir, exist_ok=True)
+    _state[uid] = {"step": "await_sub", "work_dir": work_dir}
+
+    prompt = await message.reply_text(
+        _card(
+            "📄  Step 1 / 2 — Send Subtitle",
+            "Send your subtitle file.\n"
+            "Supported: <code>.srt  .ass  .ssa  .vtt  .sub</code>\n\n"
+            "<i>⏳ Waiting 2 minutes…</i>",
+        ),
+        parse_mode=enums.ParseMode.HTML,
+    )
+    _timers[uid] = asyncio.ensure_future(_expire(uid, prompt, 120))
+
+
+# ── Step 1: receive subtitle ──────────────────────────────────
+
+@Client.on_message(filters.document & (filters.private | filters.group), group=3)
+async def encsub_step1_sub(client: Client, message: Message):
+    if not message.from_user:
+        return
+    uid   = message.from_user.id
+    state = _state.get(uid)
+    if not state or state["step"] != "await_sub":
+        return
+
+    doc   = message.document
+    fname = doc.file_name or "subtitle.srt"
+    ext   = os.path.splitext(fname)[1].lower()
+
+    if ext not in SUB_EXTS:
+        return await message.reply_text(
+            f"❌ Unsupported format <code>{ext}</code>\n"
+            f"Accepted: {', '.join(sorted(SUB_EXTS))}",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    _cancel_state(uid)
+    work_dir = state["work_dir"]
+    _state[uid] = {
+        "step":      "await_video",
+        "work_dir":  work_dir,
+        "sub_fid":   doc.file_id,
+        "sub_fname": fname,
+    }
+
+    msg = await message.reply_text(
+        _card(
+            "✅  Subtitle received!  |  Step 2 / 2 — Send Video",
+            f"📄 <code>{os.path.splitext(fname)[0]}</code>\n\n"
+            "Now send the video file to encode.\n"
+            "Supported: <code>.mkv  .mp4  .avi  .mov  .ts</code>\n\n"
+            "<i>⏳ Waiting 2 minutes…</i>",
+        ),
+        parse_mode=enums.ParseMode.HTML,
+    )
+    _state[uid]["msg"] = msg
+    _timers[uid] = asyncio.ensure_future(_expire(uid, msg, 120))
+
+
+# ── Step 2: receive video → download both → encode ────────────
+
+@Client.on_message(
+    (filters.video | filters.document) & (filters.private | filters.group),
+    group=4,
+)
+async def encsub_step2_video(client: Client, message: Message):
+    if not message.from_user:
+        return
+    uid   = message.from_user.id
+    state = _state.get(uid)
+    if not state or state["step"] != "await_video":
+        return
+
+    media = message.video or message.document
+    if not media:
+        return
+    fname = getattr(media, "file_name", None) or "video.mkv"
+    ext   = os.path.splitext(fname)[1].lower()
+    if message.document and ext not in VIDEO_EXTS:
+        return   # not a video doc — ignore
+
+    _cancel_state(uid)
+    work_dir  = state["work_dir"]
+    sub_fid   = state["sub_fid"]
+    sub_fname = state["sub_fname"]
+    msg       = state.get("msg")
+    _state.pop(uid, None)
+
+    if not msg:
+        msg = await message.reply_text("⚙️ Processing…", parse_mode=enums.ParseMode.HTML)
+
+    vname = _safe_name(fname)
+    sname = os.path.splitext(sub_fname)[0]
+
+    await msg.edit_text(
+        _card(
+            "📥  Downloading Both Files…",
+            f"🎬 <code>{vname}</code>\n📄 <code>{sname}</code>",
+        ),
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+    vdest = os.path.join(work_dir, fname)
+    sdest = os.path.join(work_dir, sub_fname)
+
+    await asyncio.gather(
+        client.download_media(media.file_id, file_name=vdest),
+        client.download_media(sub_fid,       file_name=sdest),
+    )
+
+    if not os.path.isfile(vdest):
+        return await msg.edit_text("❌ Video download failed.", parse_mode=enums.ParseMode.HTML)
+    if not os.path.isfile(sdest):
+        return await msg.edit_text("❌ Subtitle download failed.", parse_mode=enums.ParseMode.HTML)
+
+    sub_ass = await _to_ass(sdest, work_dir)
+
+    await msg.edit_text("⚙️ <b>Starting encode…</b>", parse_mode=enums.ParseMode.HTML)
+    tid = f"encsub_{uid}_{message.id}"
+    await handle_encode(vdest, message, msg, external_sub=sub_ass, tid=tid)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  /encset  /vset
-# ══════════════════════════════════════════════════════════════
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @Client.on_message(filters.command("encset") & (filters.private | filters.group))
 async def cmd_encset(client: Client, message: Message):
@@ -438,9 +410,7 @@ async def cmd_encset(client: Client, message: Message):
         editable = await message.reply_text("⚙️ Loading settings…")
         await OpenSettings(editable, user_id=message.from_user.id)
     except Exception as e:
-        await message.reply_text(
-            f"❌ <code>{e}</code>", parse_mode=enums.ParseMode.HTML
-        )
+        await message.reply_text(f"❌ <code>{e}</code>", parse_mode=enums.ParseMode.HTML)
 
 
 @Client.on_message(filters.command("vset") & (filters.private | filters.group))
@@ -450,28 +420,39 @@ async def cmd_vset(client: Client, message: Message):
     try:
         from bot.encoding.db import enc_db
         uid = message.from_user.id
-        codec     = "H.265" if await enc_db.get_hevc(uid) else "H.264"
-        crf       = await enc_db.get_crf(uid)
-        preset_map = {"uf":"ultrafast","sf":"superfast","vf":"veryfast","f":"fast","m":"medium","s":"slow"}
+        preset_map = {
+            "uf": "ultrafast", "sf": "superfast", "vf": "veryfast",
+            "f": "fast", "m": "medium", "s": "slow",
+        }
+        codec     = "H.265 (HEVC)" if await enc_db.get_hevc(uid)    else "H.264 (AVC)"
+        crf       = await enc_db.get_crf(uid)     or 26
         preset    = preset_map.get(await enc_db.get_preset(uid), "slow")
-        res       = await enc_db.get_resolution(uid) or "OG"
-        audio     = (await enc_db.get_audio(uid) or "aac").upper()
+        res_raw   = await enc_db.get_resolution(uid) or "OG"
+        res       = "Source" if res_raw == "OG" else f"{res_raw}p"
+        audio     = (await enc_db.get_audio(uid)     or "aac").upper()
         ext       = await enc_db.get_extensions(uid) or "MKV"
-        hardsub   = "✅" if await enc_db.get_hardsub(uid) else "❌"
+        hardsub   = "✅" if await enc_db.get_hardsub(uid)   else "❌"
         softsub   = "✅" if await enc_db.get_subtitles(uid) else "❌"
         watermark = "✅" if await enc_db.get_watermark(uid) else "❌"
+        bits_raw  = await enc_db.get_bits(uid)
+        bits      = "10-bit" if bits_raw else "8-bit"
+
         await message.reply_text(
-            f"<b>{SEP}</b>\n<b>⚙️  Encoding Settings</b>\n<b>{SEP}</b>\n\n"
-            f"🎬 <b>Codec:</b> <code>{codec}</code>\n"
-            f"📹 <b>CRF:</b> <code>{crf}</code>\n"
-            f"🚀 <b>Preset:</b> <code>{preset}</code>\n"
-            f"📐 <b>Resolution:</b> <code>{'Source' if res=='OG' else res+'p'}</code>\n"
-            f"🔊 <b>Audio:</b> <code>{audio}</code>\n"
-            f"📄 <b>Output:</b> <code>{ext}</code>\n"
-            f"📜 <b>Hardsub:</b> {hardsub}   <b>Softsub:</b> {softsub}\n"
-            f"💧 <b>Watermark:</b> {watermark}\n\n"
-            f"<b>{SEP}</b>\n"
-            f"Use /encset to change.",
+            f"<b>{_SEP}</b>\n"
+            f"<b>⚙️  Current Encoding Settings</b>\n"
+            f"<b>{_SEP}</b>\n\n"
+            f"🎬  <b>Codec</b>       :  <code>{codec}</code>\n"
+            f"🎚  <b>CRF</b>         :  <code>{crf}</code>\n"
+            f"🚀  <b>Preset</b>      :  <code>{preset}</code>\n"
+            f"📐  <b>Resolution</b>  :  <code>{res}</code>\n"
+            f"🔊  <b>Audio</b>       :  <code>{audio}</code>\n"
+            f"🎨  <b>Bit depth</b>   :  <code>{bits}</code>\n"
+            f"📄  <b>Container</b>   :  <code>{ext}</code>\n"
+            f"📜  <b>Hardsub</b>     :  {hardsub}   "
+            f"<b>Softsub</b> :  {softsub}\n"
+            f"💧  <b>Watermark</b>   :  {watermark}\n\n"
+            f"<b>{_SEP}</b>\n"
+            f"Use /encset to change settings.",
             parse_mode=enums.ParseMode.HTML,
         )
     except Exception as e:
