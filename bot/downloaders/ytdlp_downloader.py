@@ -1,11 +1,12 @@
 """
 yt-dlp Downloader — NXTL
-Handles YouTube, M3U8/HLS, and 1000+ sites.
+Handles YouTube, M3U8/HLS, DASH, and 1000+ sites.
 
-Fixes:
-  - M3U8/HLS: dedicated format selector + ffmpeg concat downloader
-  - Cookies: only applied for sites that actually need them
-  - Chrome impersonation: tries 131 → 124 → 120 → generic → none
+Retry chain (per attempt):
+  1. With impersonation (Chrome 131/124/120)
+  2. Without impersonation (if impersonation caused failure)
+  3. With format=best (if bestvideo+bestaudio not available)
+  4. HLS native downloader (if HLS fragment/format error)
 """
 import os
 import re
@@ -21,7 +22,7 @@ UA = (
     "Chrome/131.0.0.0 Safari/537.36"
 )
 
-# Sites that NEED cookies for age-restricted or login-gated content
+# Sites that need cookies for age-restricted / login-gated content
 _COOKIE_SITES = re.compile(
     r"(youtube\.com|youtu\.be"
     r"|instagram\.com|twitter\.com|x\.com"
@@ -29,10 +30,8 @@ _COOKIE_SITES = re.compile(
     r"|bilibili\.com|niconico\.jp"
     r"|crunchyroll\.com|netflix\.com"
     r"|primevideo\.com|disneyplus\.com)",
-    0,
+    re.I,
 )
-
-import re   # needed by _COOKIE_SITES — import at module level
 
 _IMPERSONATE_TARGETS = [
     ("chrome", "131", "windows"),
@@ -40,6 +39,29 @@ _IMPERSONATE_TARGETS = [
     ("chrome", "120", "windows"),
     ("chrome", None,  None),
 ]
+
+# Keywords that indicate impersonation caused the failure
+_IMP_ERR_KW = ("impersonate", "curl_cffi", "unsupported", "no such target")
+
+# Keywords that trigger HLS native-downloader retry
+_HLS_ERR_KW = (
+    "fragment", "m3u8", "hls",
+    "no video formats found",
+    "requested format is not available",
+    "there is no media",
+    "unable to download",
+    "403", "404",
+)
+
+# Keywords that trigger format=best fallback
+_FMT_ERR_KW = (
+    "no video formats found",
+    "requested format is not available",
+    "format is not available",
+    "no formats found",
+    "no suitable formats",
+)
+
 
 def _get_impersonate():
     try:
@@ -53,8 +75,10 @@ def _get_impersonate():
         pass
     return None
 
+
 def _needs_cookies(url: str) -> bool:
     return bool(_COOKIE_SITES.search(url))
+
 
 def _get_cookies_path(uid: int, url: str) -> str | None:
     """Return cookie file path only if the site needs it AND the user has one."""
@@ -69,6 +93,7 @@ def _get_cookies_path(uid: int, url: str) -> str | None:
     except Exception:
         pass
     return None
+
 
 def _is_m3u8(url: str) -> bool:
     return bool(re.search(
@@ -105,7 +130,9 @@ async def ytdlp_download(
     is_hls   = _is_m3u8(url)
     cookies  = _get_cookies_path(uid, url)
 
-    outtmpl = os.path.join(dest_dir, "%(title).180B.%(ext)s")
+    # FIX: %(title,id) — use video ID as fallback when title is unavailable,
+    # prevents "NA.mp4" filenames on sites that don't expose a title.
+    outtmpl = os.path.join(dest_dir, "%(title,id).180B.%(ext)s")
 
     def _hook(d: dict):
         if tm.is_cancelled(task_id):
@@ -113,7 +140,11 @@ async def ytdlp_download(
 
         status = d.get("status", "")
         if status == "finished":
-            out_path[0] = d.get("filename") or out_path[0]
+            # FIX: check both "filename" and "filepath" — post-merge yt-dlp
+            # stores the final merged path in "filepath", not "filename".
+            fn = d.get("filepath") or d.get("filename")
+            if fn:
+                out_path[0] = fn
 
         elif status == "downloading":
             done  = d.get("downloaded_bytes") or 0
@@ -121,6 +152,15 @@ async def ytdlp_download(
             speed = d.get("speed") or 0.0
             eta   = d.get("eta") or 0.0
             fname = os.path.basename(d.get("filename") or "") or "Downloading…"
+
+            # FIX: HLS streams have unknown total_bytes — fall back to
+            # fragment count so the progress bar shows something useful.
+            if is_hls and not total:
+                frag_idx   = d.get("fragment_index") or 0
+                frag_count = d.get("fragment_count") or 0
+                if frag_count:
+                    done  = frag_idx
+                    total = frag_count
 
             tm.update_progress(task_id, name=fname, done=done, total=total,
                                speed=speed, eta=eta, status="downloading")
@@ -143,13 +183,14 @@ async def ytdlp_download(
                     loop,
                 )
 
-    def _build_opts(impersonate=None, hls_native=False) -> dict:
-        if is_hls:
-            # FIX: prefer muxed "best" first — most HLS streams are muxed,
-            # not split into separate video+audio tracks.
-            # "bestvideo+bestaudio/best" was backwards and broke muxed streams.
+    def _build_opts(impersonate=None, fmt_override=None, hls_native=False) -> dict:
+        if fmt_override:
+            fmt = fmt_override
+        elif is_hls:
+            # FIX: prefer muxed "best" first — most HLS streams are muxed
+            # (combined video+audio). Old "bestvideo+bestaudio/best" tried to
+            # split first, which failed on the majority of HLS sources.
             fmt = "best/bestvideo+bestaudio/bestvideo+bestaudio"
-            merge_fmt = "mp4"
         else:
             fmt = (
                 "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]"
@@ -157,31 +198,39 @@ async def ytdlp_download(
                 "/bestvideo+bestaudio"
                 "/best[ext=mp4]/best"
             )
-            merge_fmt = "mp4"
 
         opts: dict = {
-            "outtmpl":                    {"default": outtmpl},
-            "format":                     fmt,
-            "merge_output_format":        merge_fmt,
-            "writethumbnail":             False,
-            "writesubtitles":             False,
-            "writeautomaticsub":          False,
-            "noprogress":                 True,
-            "overwrites":                 True,
-            "trim_file_name":             180,
-            "fragment_retries":           15,
-            "retries":                    15,
-            "file_access_retries":        5,
-            "extractor_retries":          5,
-            "socket_timeout":             30,
-            "progress_hooks":             [_hook],
-            "quiet":                      True,
-            "no_warnings":                True,
-            # FIX: do NOT set noplaylist=True for HLS — M3U8 IS a playlist/manifest.
-            # noplaylist only applies to non-HLS (YouTube playlists etc).
-            "noplaylist":                 not is_hls,
+            "outtmpl":                       {"default": outtmpl},
+            "format":                        fmt,
+            "merge_output_format":           "mp4",
+            "writethumbnail":                False,
+            "writesubtitles":                False,
+            "writeautomaticsub":             False,
+            "writedescription":              False,   # prevents .description junk files
+            "writeinfojson":                 False,   # prevents .info.json junk files
+            "noprogress":                    True,
+            "overwrites":                    True,
+            "trim_file_name":                180,
+            "fragment_retries":              15,
+            "retries":                       15,
+            "file_access_retries":           5,
+            "extractor_retries":             5,
+            # FIX: was 30 — too short for large HLS manifests or slow servers
+            "socket_timeout":                60,
+            "progress_hooks":                [_hook],
+            "quiet":                         True,
+            "no_warnings":                   True,
+            # FIX: noplaylist must be False for HLS — M3U8 IS a playlist/manifest.
+            # For everything else keep True to avoid accidentally grabbing playlists.
+            "noplaylist":                    not is_hls,
             "concurrent_fragment_downloads": 4,
-            "source_address":             "0.0.0.0",
+            # FIX: geo_bypass is now global, not just HLS — YouTube, Vimeo, etc.
+            # can also be geo-restricted.
+            "geo_bypass":                    True,
+            "source_address":                "0.0.0.0",
+            # FIX: keepvideo=False removes intermediate .webm/.m4a streams after
+            # merge so dest_dir doesn't fill up with extra files.
+            "keepvideo":                     False,
             "http_headers": {
                 "User-Agent":         UA,
                 "Accept-Language":    "en-US,en;q=0.9",
@@ -204,17 +253,12 @@ async def ytdlp_download(
             }],
         }
 
-        # HLS-specific options
         if is_hls:
-            opts["geo_bypass"] = True
-            # FIX: do NOT use external_downloader=ffmpeg for HLS when also using
-            # bestvideo+bestaudio format selector — ffmpeg can't handle both
-            # stream-merging and HLS download simultaneously.
-            # Use yt-dlp's native HLS downloader instead; it handles muxed
-            # and split streams correctly.
-            opts["hls_use_mpegts"] = True   # better segment buffering
+            opts["hls_use_mpegts"]          = True   # better segment buffering
+            # FIX: handle streams with discontinuities (ad breaks, restarts)
+            opts["hls_split_discontinuity"] = True
             if hls_native:
-                # Second-attempt: force native HLS downloader explicitly
+                # Retry pass: force yt-dlp's native HLS downloader
                 opts["hls_prefer_native"] = True
 
         if cookies:
@@ -230,19 +274,36 @@ async def ytdlp_download(
     def _resolve_path(info) -> str | None:
         if not info:
             return None
+        # 1. requested_downloads has the final merged filepath
         for entry in (info.get("requested_downloads") or []):
-            fn = entry.get("filepath") or entry.get("filename", "")
-            if fn and os.path.exists(fn):
-                return fn
-        final = ydl_ref[0].prepare_filename(info) if ydl_ref[0] else None
-        if final and os.path.exists(final):
-            return final
+            for key in ("filepath", "filename"):
+                fn = entry.get(key, "")
+                if fn and os.path.exists(fn):
+                    return fn
+        # 2. prepare_filename — gives pre-merge name; also probe merged extensions
+        #    because after merging .webm+.m4a → .mp4, prepare_filename still
+        #    returns ".webm" but the real file is ".mp4".
+        if ydl_ref[0]:
+            try:
+                fn = ydl_ref[0].prepare_filename(info)
+                if fn and os.path.exists(fn):
+                    return fn
+                base = os.path.splitext(fn)[0]
+                for ext in (".mp4", ".mkv", ".webm", ".m4a", ".mp3"):
+                    candidate = base + ext
+                    if os.path.exists(candidate):
+                        return candidate
+            except Exception:
+                pass
         return out_path[0]
 
     def _run_once(opts: dict):
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl_ref[0] = ydl
             info = ydl.extract_info(url, download=True)
+            # FIX: guard against silent None return from extract_info
+            if info is None:
+                raise RuntimeError("yt-dlp returned no info — download may have failed silently")
             path = _resolve_path(info)
             if path:
                 out_path[0] = path
@@ -257,10 +318,9 @@ async def ytdlp_download(
             return
         except Exception as e:
             err1 = str(e).lower()
-            # Retry without impersonation if it was the cause
-            if imp is not None and any(
-                kw in err1 for kw in ("impersonate", "curl_cffi", "unsupported", "no such target")
-            ):
+
+            # ── Retry 1: impersonation caused failure → drop it ──────────
+            if imp is not None and any(kw in err1 for kw in _IMP_ERR_KW):
                 try:
                     _run_once(_build_opts(None))
                     return
@@ -269,22 +329,34 @@ async def ytdlp_download(
                 except Exception as e2:
                     err_ref[0] = e2
                     return
-            # HLS-specific retry: if first attempt failed, try with native HLS downloader
-            if is_hls and any(
-                kw in err1 for kw in (
-                    "fragment", "m3u8", "hls", "no video formats",
-                    "requested format is not available", "format error",
-                )
-            ):
+
+            # ── Retry 2: format not available → fall back to best ────────
+            # Catches: private/geo/age-restricted where bestvideo+bestaudio
+            # isn't available but "best" muxed still works.
+            if any(kw in err1 for kw in _FMT_ERR_KW):
                 try:
-                    _run_once(_build_opts(None, hls_native=True))
+                    _run_once(_build_opts(None, fmt_override="best"))
                     return
                 except yt_dlp.utils.DownloadCancelled:
                     return
                 except Exception as e3:
                     err_ref[0] = e3
+                    # fall through to HLS retry if applicable
+                    err1 = str(e3).lower()
+
+            # ── Retry 3: HLS-specific → native yt-dlp HLS downloader ────
+            if is_hls and any(kw in err1 for kw in _HLS_ERR_KW):
+                try:
+                    _run_once(_build_opts(None, hls_native=True))
                     return
-            err_ref[0] = e
+                except yt_dlp.utils.DownloadCancelled:
+                    return
+                except Exception as e4:
+                    err_ref[0] = e4
+                    return
+
+            if not err_ref[0]:
+                err_ref[0] = e
 
     tm.set_status(task_id, "downloading")
     await loop.run_in_executor(None, _run)
@@ -293,15 +365,20 @@ async def ytdlp_download(
         raise asyncio.CancelledError
 
     if err_ref[0]:
-        raise RuntimeError(f"yt-dlp: {err_ref[0]}") from err_ref[0]
+        # FIX: include URL in error so logs show which link failed
+        raise RuntimeError(
+            f"yt-dlp failed [{url[:80]}]: {err_ref[0]}"
+        ) from err_ref[0]
 
-    # Fallback path resolution from disk
+    # Fallback path resolution from disk (catches merged/renamed files that
+    # hook and _resolve_path both missed)
     if not out_path[0] or not os.path.exists(out_path[0]):
         files = [
             os.path.join(dest_dir, f)
             for f in os.listdir(dest_dir)
             if os.path.isfile(os.path.join(dest_dir, f))
-            and not f.endswith((".part", ".ytdl", ".tmp"))
+            # FIX: also exclude .json and .description — yt-dlp metadata files
+            and not f.endswith((".part", ".ytdl", ".tmp", ".json", ".description"))
         ]
         out_path[0] = max(files, key=os.path.getmtime) if files else None
 
