@@ -763,7 +763,7 @@ async def tf_toggle(client, cb: CallbackQuery):
     else:
         sel.add(idx)
     try:
-        files = await None  # removed
+        files = []  # qBittorrent handles file listing via web UI
         await cb.message.edit_reply_markup(reply_markup=_build_file_kb(gid, files))
     except Exception:
         pass
@@ -777,7 +777,7 @@ async def tf_all(client, cb: CallbackQuery):
         return await cb.answer("Session expired.", show_alert=True)
     if cb.from_user.id != _pending[gid]["uid"]:
         return await cb.answer("Not your task.", show_alert=True)
-    files = await None  # removed
+    files = []
     _selection[gid] = set(f["index"] for f in files)
     try:
         await cb.message.edit_reply_markup(reply_markup=_build_file_kb(gid, files))
@@ -793,7 +793,7 @@ async def tf_none(client, cb: CallbackQuery):
         return await cb.answer("Session expired.", show_alert=True)
     if cb.from_user.id != _pending[gid]["uid"]:
         return await cb.answer("Not your task.", show_alert=True)
-    files = await None  # removed
+    files = []
     _selection[gid] = set()
     try:
         await cb.message.edit_reply_markup(reply_markup=_build_file_kb(gid, files))
@@ -824,7 +824,7 @@ async def tf_start(client, cb: CallbackQuery):
 
     # Continue with actual download
     try:
-        paths = await None  # removed
+        paths = []  # qBittorrent handles download
         await _finish_torrent(
             client, p["message"], p["msg"], paths,
             p["dest_dir"], p["tid"], p["uid"],
@@ -837,24 +837,6 @@ async def tf_start(client, cb: CallbackQuery):
     finally:
         tm.finish_task(p["tid"])
         _cleanup(p["dest_dir"])
-
-
-# ── Callback: group card refresh ──────────────────────────────
-
-@Client.on_callback_query(filters.regex(r"^grp_refresh:"))
-async def grp_refresh_cb(client, cb):
-    uid = int(cb.data.split(":")[1])
-    if cb.from_user.id != uid:
-        return await cb.answer("Not your tasks.", show_alert=True)
-    try:
-        await cb.message.edit_text(
-            group_task_card(uid),
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=group_task_kb(uid),
-        )
-        await cb.answer("🔄 Refreshed!")
-    except Exception:
-        await cb.answer()
 
 
 def get_pending():        return _pending

@@ -6,6 +6,11 @@ import config
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from bot.utils.size_utils import human_size, human_speed, human_time
 
+# ── Cancel command helper ─────────────────────────────────────
+def cancel_cmd(tid: str) -> str:
+    """Return a tappable /c1_<tid> cancel link for inline cards."""
+    return f"<code>/c1_{tid.lower()}</code>"
+
 # ── Progress bar — D8 design ─────────────────────────────────
 # 「▉▉▉▉▶▫▫▫▫▫▫」  thick block fill + sharp arrow tip + square tail,
 # framed in corner brackets. Used everywhere progress is shown.
