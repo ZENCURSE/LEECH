@@ -144,7 +144,15 @@ class JDownloader:
                 proc = await create_subprocess_exec(
                     *cmd, stdout=PIPE, stderr=PIPE, cwd=JD_DIR
                 )
-                await proc.communicate()
+                out, err = await proc.communicate()
+                code = proc.returncode
+                tail_out = out.decode(errors="replace").strip()[-1500:] if out else ""
+                tail_err = err.decode(errors="replace").strip()[-1500:] if err else ""
+                LOGGER.warning(f"[JD] java exited with code {code}")
+                if tail_out:
+                    LOGGER.warning(f"[JD] stdout (tail):\n{tail_out}")
+                if tail_err:
+                    LOGGER.warning(f"[JD] stderr (tail):\n{tail_err}")
             except Exception as e:
                 LOGGER.error(f"[JD] Process error: {e}")
             LOGGER.warning("[JD] Process exited — restarting in 10s")
