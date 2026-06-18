@@ -17,6 +17,8 @@ _SITES = [
     "kuttymovies","moviesda","tamilgun","tamilyogi","madrasrockers",
     "mallumv","malayalamrockers","cinemavilla","moviezwap","teluguwap",
     "ibomma","aha","thepiratebay","torrentz2","torrentking",
+    "tamilmv","telugurockers","kannadarockers","moviezadda","skysetx",
+    "filmy4wap","filmy4web","extramovies","khatrimazafull","123mkv",
     # International
     "1337x","yts","rarbg","eztv","ettv","ganool","netnaija",
     "123movies","fmovies","putlocker","uwatchfree","7movierulz","pahe",
@@ -215,16 +217,48 @@ def parse_title_year(name: str) -> tuple[str, str | None]:
     """
     Extract (title, year) from a filename for TMDB/IMDB lookups.
 
+    Unlike clean_name() (which intentionally KEEPS language tags like
+    "Hindi"/"Tamil" since they're useful in the displayed filename),
+    this function strips them — TMDB search returns zero results for
+    queries like "Hindi Dubbed Jawan" or "Jawan Hindi", since the
+    language word isn't part of the actual title.
+
     Returns
     -------
     (title, year)  — year is None if not found.
 
     Examples
     --------
-    "Interstellar 2014 1080p BluRay.mkv"  → ("Interstellar", "2014")
-    "The Boys S03E01 1080p WEB-DL.mkv"    → ("The Boys", None)
+    "Interstellar 2014 1080p BluRay.mkv"        → ("Interstellar", "2014")
+    "The Boys S03E01 1080p WEB-DL.mkv"          → ("The Boys", None)
+    "Hindi Dubbed Jawan 2023 1080p WEBRip.mkv"  → ("Jawan", "2023")
+    "[TamilMV] Jawan 2023 1080p.mkv"            → ("Jawan", "2023")
+    "Jawan (2023) 1080p WEBRip.mkv"             → ("Jawan", "2023")
     """
     stem = os.path.splitext(clean_name(name))[0]
+
+    # clean_name() strips bracket-wrapped/domain site tags BEFORE converting
+    # separators to spaces, but if a site tag was bracket-wrapped with mixed
+    # casing not in the known _SITES list (e.g. "[TamilMV]"), or was part of
+    # a domain-like prefix ("www.Tamilrockers.cm -"), fragments can survive
+    # as plain words after the dots/brackets become spaces. Re-run the site
+    # regexes against the cleaned stem to catch these leftovers.
+    stem = _SITE_TLD_RE.sub(" ", stem)
+    for _ in range(2):
+        stem = _SITE_RE.sub(" ", stem)
+    # Generic leftover bracket-tag words clean_name() didn't recognise —
+    # short ALL-CAPS-ish tokens or known piracy-tag shapes at the start,
+    # plus short 2-3 letter typo-TLD fragments left behind anywhere
+    # (e.g. "tamilrockers.cm" → site name stripped, ".cm" fragment remains)
+    stem = re.sub(r"(?i)^\s*(www|cm|cc|co|in|io|net|org)\b\s*", "", stem)
+    stem = re.sub(r"(?i)\b(cm|cc|vc|pw|ws|gg|sh|la)\b\s*", " ", stem)
+    stem = re.sub(r"\s+", " ", stem).strip()
+
+    # Strip leading bracket/paren tags clean_name() may have left as plain
+    # text adjacent to brackets it removed, e.g. residual "[TamilMV] Jawan"
+    # if separator replacement ran before site matching in edge cases.
+    stem = re.sub(r"^\s*\[[^\]]{0,40}\]\s*", "", stem)
+    stem = re.sub(r"^\s*\([^)]{0,40}\)\s*", "", stem)
 
     year_match = re.search(r"\b((?:19|20)\d{2})\b", stem)
     if year_match:
@@ -236,13 +270,32 @@ def parse_title_year(name: str) -> tuple[str, str | None]:
 
     # Strip everything from first SE marker onwards in title
     title = re.sub(r"\s+S\d{1,2}E?\d{0,2}.*$", "", title, flags=re.I).strip()
-    # Strip any leading/trailing tech tag leftovers
     title = re.sub(
         r"(?i)\s+(1080p|720p|480p|2160p|4K|UHD|BluRay|WEB-DL|WEBRip|HEVC|x264|x265).*$",
         "", title
     ).strip()
 
-    return title, year
+    # Strip language tags — these break TMDB search and can appear
+    # as a prefix ("Hindi Dubbed Jawan") or suffix ("Jawan Hindi").
+    # Common audio-track and dub labels seen in pirated release names.
+    _lang_words = (
+        r"hindi|tamil|telugu|malayalam|kannada|bengali|punjabi|marathi|gujarati"
+        r"|english|korean|japanese|chinese|spanish|french|german|russian"
+        r"|dubbed|dual\s*audio|multi\s*audio|multi\b"
+    )
+    title = re.sub(rf"(?i)^\s*(?:{_lang_words})\s+", "", title).strip()
+    title = re.sub(rf"(?i)\s+(?:{_lang_words})\s*$", "", title).strip()
+    # Run twice — handles "Hindi Dubbed Jawan" (two leading tokens)
+    title = re.sub(rf"(?i)^\s*(?:{_lang_words})\s+", "", title).strip()
+
+    # Strip any remaining stray brackets/parens/site-leftover punctuation
+    # at the edges (e.g. "Jawan (" left over when year was "(2023)")
+    title = re.sub(r"[\[\]{}()]+", "", title).strip()
+    title = re.sub(r"[\-_:|]+$", "", title).strip()
+    title = re.sub(r"^[\-_:|]+", "", title).strip()
+    title = re.sub(r"\s+", " ", title).strip()
+
+    return title or "Untitled", year
 
 
 def batch_rename(
