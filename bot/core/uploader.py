@@ -373,10 +373,14 @@ async def _send(client, chat_id, path, caption, thumb, cb, as_doc, uid=0):
 async def upload_file(client, chat_id: int, file_path: str,
                       task_id: str, msg, uid: int,
                       origin_msg=None, is_group: bool = False,
-                      progress_msg=None) -> None:
+                      progress_msg=None,
+                      suppress_done_card: bool = False) -> None:
     """
     progress_msg: if provided (encode flow), upload progress is edited
                   directly on this message rather than via status loop.
+    suppress_done_card: set True when uploading multiple files in a batch
+                  (e.g. extracted zip) so done_card isn't sent after each
+                  individual file. Caller sends one summary card at the end.
     """
 
     if not os.path.isfile(file_path):
@@ -578,7 +582,7 @@ async def upload_file(client, chat_id: int, file_path: str,
             if origin_msg else f"#{uid}"
 
     # Multi-part: show compact done_card in the status message
-    if len(parts) > 1:
+    if len(parts) > 1 and not suppress_done_card:
         avg_spd = file_size / max(total_elapsed, 0.001)
         try:
             await msg.edit_text(
@@ -589,7 +593,7 @@ async def upload_file(client, chat_id: int, file_path: str,
             pass
 
     # Group only: one compact reply so the requester sees it in the group
-    if is_group and origin_msg:
+    if is_group and origin_msg and not suppress_done_card:
         avg_spd = file_size / max(total_elapsed, 0.001)
         try:
             await origin_msg.reply_text(

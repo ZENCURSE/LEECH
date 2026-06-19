@@ -18,6 +18,7 @@ from bot.core.uploader import upload_file
 from bot.core.extractor import extract, make_zip, SUPPORTED_EXTRACT
 from bot.utils.direct_links import resolve
 from bot.utils.progress import error_card, cancel_card, task_kb, group_task_card, group_task_kb, status_message
+from bot.utils.size_utils import human_size, human_size_pair, human_speed, human_time
 from bot.handlers._auth import auth_required
 from bot.database import users_db
 
@@ -621,6 +622,10 @@ async def _post_download(client, message, msg, paths, dest_dir, tid, uid, action
     from bot import uploader_client, log_leech
     uclient = uploader_client()
 
+    is_batch  = len(final) > 1
+    batch_start = time.monotonic()
+    total_bytes = sum(os.path.getsize(p) for p in final if os.path.isfile(p))
+
     # ── In groups: send file to user's PM, not the group ──
     if is_group:
         upload_chat_id = uid          # PM with the user
@@ -639,18 +644,48 @@ async def _post_download(client, message, msg, paths, dest_dir, tid, uid, action
             if tm.is_cancelled(tid):
                 break
             await upload_file(uclient, uid, p, tid, msg, uid,
-                              origin_msg=message, is_group=True)
+                              origin_msg=message, is_group=True,
+                              suppress_done_card=is_batch)
     else:
         for p in final:
             if tm.is_cancelled(tid):
                 break
             await upload_file(uclient, message.chat.id, p, tid, msg, uid,
-                              origin_msg=message, is_group=False)
+                              origin_msg=message, is_group=False,
+                              suppress_done_card=is_batch)
 
     elapsed = time.monotonic() - start
     uname   = message.from_user.username or str(uid)
     fname   = os.path.basename(final[-1]) if final else ""
     await log_leech(uname, uid, fname, tid, elapsed)
+
+    # ── Single summary card for batch (zip extract) uploads ──
+    if is_batch and not tm.is_cancelled(tid):
+        batch_elapsed = time.monotonic() - batch_start
+        avg_spd       = total_bytes / max(batch_elapsed, 0.001)
+        uname_fmt     = f"@{getattr(message.from_user, 'username', None) or uid}"
+        summary = (
+            f"╔═「 ✅ <b>UPLOAD COMPLETE</b> 」\n"
+            f"║\n"
+            f"║  📦 <b>{len(final)} files</b> uploaded\n"
+            f"║\n"
+            f"╠═「 📊 <b>STATS</b> 」\n"
+            f"║  ➤ <b>Size</b>: <code>{human_size_pair(0, total_bytes)}</code>\n"
+            f"║  ➤ <b>Speed</b>: <code>{human_speed(avg_spd)}</code>\n"
+            f"║  ➤ <b>Time</b>: <code>{human_time(int(batch_elapsed))}</code>\n"
+            f"║  ➤ <b>By</b>: {uname_fmt}\n"
+            f"╚══════════════════════\n"
+            f"  <i>{config.WATERMARK}</i>"
+        )
+        try:
+            await msg.edit_text(summary, parse_mode=enums.ParseMode.HTML, reply_markup=None)
+        except Exception:
+            pass
+        if is_group and message:
+            try:
+                await message.reply_text(summary, parse_mode=enums.ParseMode.HTML)
+            except Exception:
+                pass
 
     # Update group card to show done
     if is_group:

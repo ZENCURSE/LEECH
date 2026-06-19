@@ -775,10 +775,20 @@ async def generate_hd_thumb(
     """
     Main entry point for the uploader.
     Returns path to a 1280×720 JPEG thumbnail, always.
+
+    Priority:
+      1. Explicit custom_thumb passed by caller
+      2. User's saved custom thumbnail (from /settings)
+      3. Fanart.tv backdrop + logo  ← best quality
+      4. TMDB backdrop + logo
+      5. iTunes portrait → landscape
+      6. ffmpeg frame
+      7. Title card (always succeeds)
     """
     from bot.utils.thumb_store import TMP_DIR as tmp
     os.makedirs(tmp, exist_ok=True)
 
+    # 1. Explicit override
     if custom_thumb and os.path.exists(custom_thumb):
         dest = os.path.join(tmp, f"custom_{int(time.time())}.jpg")
         try:
@@ -786,8 +796,10 @@ async def generate_hd_thumb(
             img = _landscape_crop(Image.open(custom_thumb).convert("RGB"))
             _save_jpeg(img, dest)
             return dest
-        except Exception: pass
+        except Exception:
+            pass
 
+    # 2. User's saved custom thumbnail from /settings
     if uid:
         try:
             from bot.database import users_db
@@ -799,15 +811,20 @@ async def generate_hd_thumb(
                 img = _landscape_crop(Image.open(tp).convert("RGB"))
                 _save_jpeg(img, dest)
                 return dest
-        except Exception: pass
+        except Exception:
+            pass
 
+    # 3–7. Auto-fetch: use the SAME parse_title_year as the rest of the bot
+    #       (it now strips language tags, site prefixes, dangling punctuation)
     title = _guess_title(file_path)
     year  = None
     try:
         from bot.utils.rename import parse_title_year
         t, year = parse_title_year(file_path)
-        title = t or title
-    except Exception: pass
+        if t and t != "Untitled":
+            title = t
+    except Exception:
+        pass
 
     dest = os.path.join(tmp, f"auto_{int(time.time())}.jpg")
     await get_thumbnail(title, year, dest, title_overlay=title, video_path=file_path)
