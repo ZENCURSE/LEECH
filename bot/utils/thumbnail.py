@@ -962,14 +962,14 @@ async def get_thumbnail(
                 _cache_put(title, year, dest)
                 return True
 
-    # 6. ffmpeg frame
+    # 6. ffmpeg frame (real video frame — no fake poster)
     if video_path and await _ffmpeg_frame(video_path, dest):
         if _ok(dest):
             return True
 
-    # 7. Title card (always succeeds)
-    generate_title_card(label, dest, year or "")
-    return True
+    # No real poster found — do NOT generate a fake title card
+    LOGGER.info(f"[Thumb] ⚠️ No real poster found for '{title}' — skipping thumbnail")
+    return False
 
 
 async def generate_hd_thumb(
@@ -979,7 +979,8 @@ async def generate_hd_thumb(
 ) -> str | None:
     """
     Main entry point for the uploader.
-    Returns path to a 1280×720 HIGH QUALITY JPEG thumbnail, always.
+    Returns path to a 1280×720 HIGH QUALITY JPEG thumbnail, or None if no
+    real poster was found.
 
     The returned image is used for BOTH:
       - cover= parameter (sent as-is, high quality)
@@ -988,12 +989,12 @@ async def generate_hd_thumb(
     Priority:
       1. Explicit custom_thumb passed by caller
       2. User's saved custom thumbnail (from /settings)
-      3. Fanart.tv: real logo + backdrop
-      4. TMDB: backdrop+logo OR actual movie poster
-      5. OMDB: real IMDb poster
-      6. iTunes portrait
-      7. ffmpeg frame
-      8. Title card (always succeeds)
+      3. Fanart.tv: real logo + backdrop (actual movie artwork)
+      4. TMDB: backdrop+logo OR actual movie poster → landscape
+      5. OMDB: real IMDb poster → landscape
+      6. iTunes portrait poster → landscape
+      7. ffmpeg video frame
+      8. None — NO fake/custom title card is generated
     """
     from bot.utils.thumb_store import TMP_DIR as tmp
     os.makedirs(tmp, exist_ok=True)

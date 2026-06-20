@@ -15,7 +15,7 @@ from pyrogram.errors import FloodWait, BadRequest, RPCError
 from bot.core import task_manager as tm
 from bot.utils.progress import done_card, task_kb
 from bot.utils.size_utils import human_size
-from bot.utils.thumbnail import get_thumbnail, generate_title_card
+from bot.utils.thumbnail import get_thumbnail
 from bot.utils.rename import smart_rename, parse_title_year
 from bot.utils.token_resolver import (
     resolve_tokens, _ffprobe,
@@ -93,12 +93,11 @@ async def _resolve_thumb(uid, name, tmp_dir, title: str = ""):
 
     Priority:
       1. User-set custom thumb (thumb_path in settings)
-      2. Auto: Fanart moviethumb (has logo baked in) → TMDB backdrop+overlay
-               → iTunes poster+landscape → generate_title_card (guaranteed)
+      2. Auto: Fanart real logo+backdrop → TMDB backdrop+logo → TMDB poster
+               → OMDB IMDb poster → iTunes poster → ffmpeg frame
 
+    Returns None if no real poster can be found — no fake title card is generated.
     Every path goes through _prep_thumb() before send_video/send_document.
-    generate_title_card() is the final fallback — it ALWAYS produces an image
-    with the movie title visible, so uploads never have a missing thumbnail.
     """
     try:
         s = users_db.get_settings(uid)
@@ -115,13 +114,13 @@ async def _resolve_thumb(uid, name, tmp_dir, title: str = ""):
             return None
 
         dest = os.path.join(tmp_dir, f"auto_thumb_{uid}.jpg")
-        from bot.utils.thumbnail import get_thumbnail, generate_title_card
+        from bot.utils.thumbnail import get_thumbnail
 
-        # get_thumbnail tries Fanart → TMDB → iTunes → generate_title_card
-        # It ALWAYS returns True (generate_title_card is guaranteed fallback)
-        await get_thumbnail(lookup_title, year, dest, title_overlay=lookup_title)
+        # get_thumbnail tries Fanart → TMDB → OMDB → iTunes → ffmpeg frame
+        # Returns False if no real poster found (no fake title card generated)
+        found = await get_thumbnail(lookup_title, year, dest, title_overlay=lookup_title)
 
-        if os.path.isfile(dest):
+        if found and os.path.isfile(dest):
             return _hq_resize_thumb(dest, os.path.join(tmp_dir, f"auto_thumb_hq_{uid}.jpg"),
                                     max_w=1280, max_h=720)
 
