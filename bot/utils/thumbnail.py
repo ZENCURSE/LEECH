@@ -535,10 +535,16 @@ async def _tmdb_thumb(session, tmdb_id, mtype, dest, title) -> bool:
     poster_tmp = dest + ".tm_poster.tmp"
 
     # ── Strategy 1: Textless backdrop + Logo PNG (no double logo) ─
+    # When all logo sources fail, falls back to text overlay on the SAME
+    # textless backdrop rather than wasting it and re-downloading in strategy 3.
+    best_textless_bg = None   # save the first good textless backdrop path for fallback
     if textless_backdrops:
         # Get IMDb ID now so Metahub is available as logo fallback
         ext     = await _external_ids(session, tmdb_id, mtype)
         imdb_id = ext.get("imdb_id", "")
+
+        # Pre-fetch Metahub logo once — same logo would be tried for every backdrop
+        mh_bytes = await _metahub_logo(session, imdb_id) if imdb_id else None
 
         for bd in textless_backdrops[:5]:
             fp = bd.get("file_path", "")
@@ -550,8 +556,7 @@ async def _tmdb_thumb(session, tmdb_id, mtype, dest, title) -> bool:
                 _rm(bg_tmp)
                 continue
 
-            # Try TMDB logos first
-            logo_success = False
+            # Try TMDB logos
             for logo in logos[:5]:
                 lfp    = logo.get("file_path", "")
                 lbytes = await _get_bytes(session, _ORIG + lfp) if lfp else None
@@ -560,13 +565,18 @@ async def _tmdb_thumb(session, tmdb_id, mtype, dest, title) -> bool:
                     LOGGER.info("[Thumb] ✅ TMDB: textless backdrop + TMDB logo")
                     return True
 
-            # TMDB logos failed — try Metahub logo on same textless backdrop
-            if imdb_id:
-                mh_bytes = await _metahub_logo(session, imdb_id)
-                if mh_bytes and _composite(bg_tmp, mh_bytes, dest, title):
-                    _rm(bg_tmp)
-                    LOGGER.info("[Thumb] ✅ TMDB: textless backdrop + Metahub logo")
-                    return True
+            # TMDB logos failed — try Metahub logo
+            if mh_bytes and _composite(bg_tmp, mh_bytes, dest, title):
+                _rm(bg_tmp)
+                LOGGER.info("[Thumb] ✅ TMDB: textless backdrop + Metahub logo")
+                return True
+
+            # All logo sources failed — use this textless backdrop with text overlay
+            # immediately rather than deleting it and re-downloading in strategy 3.
+            if _text_overlay(bg_tmp, dest, title):
+                _rm(bg_tmp)
+                LOGGER.info("[Thumb] ✅ TMDB: textless backdrop + text overlay (no logo found)")
+                return True
 
             _rm(bg_tmp)
 
@@ -671,7 +681,13 @@ async def _fanart_thumb(session, tmdb_id, mtype, dest, title) -> bool:
     # ── Strategy 1: Clean backdrop + logo composite ───────────
     # Only use moviebackground (textless) + logo PNG.
     # moviethumb is intentionally excluded — it already has the logo baked in.
-    if logos and clean_bgs:
+    # If no logo is found (Fanart + Metahub both fail), falls back to text
+    # overlay on the same clean backdrop immediately (no wasted re-download).
+    if clean_bgs:
+        imdb_id  = ext.get("imdb_id", "")
+        # Pre-fetch Metahub logo once — same logo for every backdrop attempt
+        mh_bytes = await _metahub_logo(session, imdb_id) if imdb_id else None
+
         for bg_art in clean_bgs[:4]:
             url = bg_art.get("url", "")
             if not url:
@@ -682,7 +698,7 @@ async def _fanart_thumb(session, tmdb_id, mtype, dest, title) -> bool:
                 _rm(bg_tmp)
                 continue
 
-            logo_placed = False
+            # Try Fanart logos
             for logo_art in logos[:4]:
                 lurl   = logo_art.get("url", "")
                 lbytes = await _get_bytes(session, lurl) if lurl else None
@@ -691,19 +707,17 @@ async def _fanart_thumb(session, tmdb_id, mtype, dest, title) -> bool:
                     LOGGER.info("[Thumb] ✅ Fanart: clean backdrop + logo")
                     return True
 
-            # Fanart logos failed — try Metahub logo on same clean backdrop
-            imdb_id = ext.get("imdb_id", "")
-            if imdb_id:
-                mh_bytes = await _metahub_logo(session, imdb_id)
-                if mh_bytes and _composite(bg_tmp, mh_bytes, dest, title):
-                    _rm(bg_tmp)
-                    LOGGER.info("[Thumb] ✅ Fanart: clean backdrop + Metahub logo")
-                    return True
+            # Fanart logos failed — try Metahub logo
+            if mh_bytes and _composite(bg_tmp, mh_bytes, dest, title):
+                _rm(bg_tmp)
+                LOGGER.info("[Thumb] ✅ Fanart: clean backdrop + Metahub logo")
+                return True
 
-            # No logo at all — just text overlay on the clean background
+            # All logo sources failed — text overlay on the clean backdrop
+            # immediately rather than wasting it and re-downloading in strategy 3.
             if _text_overlay(bg_tmp, dest, title):
                 _rm(bg_tmp)
-                LOGGER.info("[Thumb] ✅ Fanart: clean backdrop + text")
+                LOGGER.info("[Thumb] ✅ Fanart: clean backdrop + text (no logo found)")
                 return True
             _rm(bg_tmp)
 
