@@ -2,6 +2,7 @@
 pyrofork
 TgCrypto
 pyroblack
+aiogram==3.18.0          # PM bot with cover= support for HD video poster
 
 # ── Download ──────────────────────────────────────────────────
 yt-dlp[default,curl-cffi]>=2026.06.09

@@ -8,15 +8,19 @@ Storage layout:
 
 Resolution policy
 -----------------
-Pyrogram uses MTProto (not Bot API), so it accepts full-resolution thumbs.
-We store and send at 1280×720 — the native HD resolution for Telegram
-video/document thumbs over MTProto. The 320×320 Bot API limit does NOT apply.
+TWO separate thumbnail fields in Telegram TL schema:
 
-Only prep_for_upload() is called right before Pyrogram send_video/send_document.
-It ensures the file is:
-  - JPEG
-  - ≤ 200 KB   (Telegram MTProto limit)
-  - 1280×720   (HD, looks great in chat)
+  thumb=  (InputFile) — small preview shown in file list / notifications
+          Max 320×320 px, ≤ 200 KB. Hard Telegram limit.
+
+  cover=  (InputFile Photo) — HD image shown when video is opened/played.
+          PyroTGFork send_video(cover=) / aiogram send_video(cover=)
+          Accepts JPEG up to 1280×720, up to 5 MB.
+          aiogram>=3.18.0 properly passes this as a full photo upload.
+
+We cache at FULL QUALITY (up to 5 MB) so cover= always looks great.
+prep_for_upload() compresses to 200 KB only for the thumb= small preview.
+prep_cover() returns the FULL-QUALITY 1280×720 JPEG for cover=.
 """
 
 import hashlib
@@ -32,10 +36,11 @@ CACHE_DIR  = os.path.join(_BASE, "thumb_cache")
 TMP_DIR    = os.path.join(_BASE, "thumb_tmp")
 
 CACHE_TTL  = 30 * 24 * 3600    # 30 days
-CACHE_MAX  = 500 * 1024 * 1024  # 500 MB cap (full-res JPEGs ~50–150 KB each)
+CACHE_MAX  = 500 * 1024 * 1024  # 500 MB cap
 
-_W, _H     = 1280, 720          # HD — MTProto supports this
-_MAX_BYTES = 200 * 1024         # 200 KB hard limit
+_W, _H          = 1280, 720          # HD target
+_THUMB_MAX      = 200 * 1024         # 200 KB — thumb= small preview hard limit
+_COVER_MAX      = 5 * 1024 * 1024   # 5 MB  — cover= full-quality HD poster
 
 for _d in (THUMB_DIR, CACHE_DIR, TMP_DIR):
     os.makedirs(_d, exist_ok=True)
@@ -49,24 +54,22 @@ def user_thumb_path(uid: int) -> str:
 
 def save_user_thumb(uid: int, src: str) -> str | None:
     """
-    Save user's custom thumbnail at full 1280×720 HD.
-    One file per user — overwritten on each update.
+    Save user's custom thumbnail at full 1280×720 HD quality.
+    Stored at high quality (up to 5 MB) — never compressed to 200 KB here.
+    prep_for_upload() handles compression at send time.
     """
     dest = user_thumb_path(uid)
     try:
         from PIL import Image
         img    = Image.open(src).convert("RGB")
         w, h   = img.size
-        # Scale to fit 1280×720 keeping aspect ratio, letterbox with black
         scale  = min(_W / w, _H / h)
         nw, nh = int(w * scale), int(h * scale)
         img    = img.resize((nw, nh), Image.LANCZOS)
         canvas = Image.new("RGB", (_W, _H), (0, 0, 0))
         canvas.paste(img, ((_W - nw) // 2, (_H - nh) // 2))
-        for q in (95, 88, 80, 70):
-            canvas.save(dest, "JPEG", quality=q, subsampling=0, optimize=True)
-            if os.path.getsize(dest) <= _MAX_BYTES:
-                break
+        # Save at full quality — this is what cover= will use
+        canvas.save(dest, "JPEG", quality=95, subsampling=0, optimize=True)
         size_kb = os.path.getsize(dest) / 1024
         LOGGER.info(f"[ThumbStore] Saved user thumb uid={uid} ({size_kb:.0f} KB, 1280×720)")
         return dest
@@ -117,24 +120,30 @@ def cache_get(title: str, year: str | None) -> str | None:
 
 def cache_put(title: str, year: str | None, src: str) -> str | None:
     """
-    Cache at full 1280×720 HD — same resolution as what gets sent.
-    Eviction keeps total under 500 MB.
+    Cache the poster at FULL QUALITY (up to 5 MB) — never compress here.
+    The cache stores the original high-quality poster for cover= use.
+    prep_for_upload() handles 200 KB compression when building the thumb= preview.
     """
     dest = cache_path(title, year)
     try:
         from PIL import Image
         img    = Image.open(src).convert("RGB")
         w, h   = img.size
+        # Scale to 1280×720 keeping aspect ratio, letterbox with black
         scale  = min(_W / w, _H / h)
         nw, nh = int(w * scale), int(h * scale)
         img    = img.resize((nw, nh), Image.LANCZOS)
         canvas = Image.new("RGB", (_W, _H), (0, 0, 0))
         canvas.paste(img, ((_W - nw) // 2, (_H - nh) // 2))
-        for q in (95, 88, 80, 70):
+
+        # Save at full quality — never cap at 200 KB in the cache
+        for q in (95, 90, 85):
             canvas.save(dest, "JPEG", quality=q, subsampling=0, optimize=True)
-            if os.path.getsize(dest) <= _MAX_BYTES:
+            if os.path.getsize(dest) <= _COVER_MAX:
                 break
-        LOGGER.debug(f"[ThumbStore] Cached {title} ({year}) → {os.path.getsize(dest)//1024} KB")
+
+        size_kb = os.path.getsize(dest) / 1024
+        LOGGER.debug(f"[ThumbStore] Cached {title} ({year}) → {size_kb:.0f} KB (full quality)")
         _evict_cache()
         return dest
     except Exception as e:
@@ -205,12 +214,13 @@ def prep_for_upload(src: str, dest: str | None = None) -> str | None:
     try:
         from PIL import Image
         img = Image.open(src).convert("RGB")
-        # thumbnail() fits within box preserving aspect ratio
         img.thumbnail((320, 320), Image.LANCZOS)
         for q in (92, 82, 72, 60):
             img.save(out, "JPEG", quality=q, optimize=True)
-            if os.path.getsize(out) <= _MAX_BYTES:
+            if os.path.getsize(out) <= _THUMB_MAX:
                 break
+        size_kb = os.path.getsize(out) / 1024
+        LOGGER.debug(f"[ThumbStore] thumb= preview: {size_kb:.0f} KB (≤200 KB)")
         return out
     except Exception as e:
         LOGGER.warning(f"[ThumbStore] prep_for_upload (320): {e}")
@@ -219,19 +229,19 @@ def prep_for_upload(src: str, dest: str | None = None) -> str | None:
 
 def prep_cover(src: str, dest: str | None = None) -> str | None:
     """
-    Prepare the HD cover for the cover= parameter in PyroTGFork send_video().
+    Prepare the HD cover for the cover= parameter.
 
-    Background:
-      Telegram has TWO separate thumbnail fields in its TL schema:
-        - thumb     → InputFile, max 320×320, shown in file list / notifications
-        - video_cover (exposed as cover= in PyroTGFork) → full photo object,
-                      accepts up to 1280×720, shown when you open/play the video
+    Works with BOTH:
+      - PyroTGFork send_video(cover=...)   → layer 166+
+      - aiogram>=3.18.0 send_video(cover=...) → properly sends as full photo
 
-    PyroTGFork added cover= to send_video() in layer 166+.
-    Sending cover= uploads the image as a full Photo (not a document thumbnail),
-    which Telegram stores and displays at full resolution in the video player.
+    The cover= field accepts a full Photo (not a thumbnail), so Telegram
+    stores and displays it at full resolution when the video is opened.
 
-    This function outputs a letterboxed 1280×720 JPEG ≤ 200 KB.
+    Output: 1280×720 JPEG at HIGH QUALITY (up to 5 MB).
+    We do NOT compress to 200 KB here — that limit only applies to thumb=.
+    aiogram 3.18.0 properly handles the cover as a separate photo upload,
+    so the full-quality poster is shown in the video player.
     """
     if not src or not os.path.exists(src):
         return None
@@ -240,17 +250,24 @@ def prep_cover(src: str, dest: str | None = None) -> str | None:
         from PIL import Image
         img    = Image.open(src).convert("RGB")
         w, h   = img.size
+
+        # Scale to exactly 1280×720, letterbox with black bars
         scale  = min(_W / w, _H / h)
         nw, nh = int(w * scale), int(h * scale)
         img    = img.resize((nw, nh), Image.LANCZOS)
         canvas = Image.new("RGB", (_W, _H), (0, 0, 0))
         canvas.paste(img, ((_W - nw) // 2, (_H - nh) // 2))
-        for q in (95, 88, 80, 70):
+
+        # Save at FULL QUALITY — this is the movie poster people will see
+        # Never compress to 200 KB here (that's only for thumb=)
+        for q in (95, 90, 85):
             canvas.save(out, "JPEG", quality=q, subsampling=0, optimize=True)
-            if os.path.getsize(out) <= _MAX_BYTES:
+            sz = os.path.getsize(out)
+            if sz <= _COVER_MAX:
                 break
+
         size_kb = os.path.getsize(out) / 1024
-        LOGGER.debug(f"[ThumbStore] cover prep: {nw}×{nh} → {size_kb:.0f} KB")
+        LOGGER.debug(f"[ThumbStore] cover= HD poster: {nw}×{nh} → {size_kb:.0f} KB (full quality)")
         return out
     except Exception as e:
         LOGGER.warning(f"[ThumbStore] prep_cover (1280): {e}")

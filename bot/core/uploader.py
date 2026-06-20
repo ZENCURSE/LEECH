@@ -302,8 +302,8 @@ async def _send(client, chat_id, path, caption, thumb, cb, as_doc, uid=0):
     # ── Video ─────────────────────────────────────────────────
     if is_video:
         duration, _, _ = await get_media_info(path)
-        small = _prep_thumb(thumb)    # 320×320 for thumb=
-        cover = _prep_cover(thumb)    # 1280×720 for cover=
+        small = _prep_thumb(thumb)    # 320×320 for thumb= (file list preview)
+        cover = _prep_cover(thumb)    # 1280×720 FULL QUALITY for cover= (video player)
 
         # Real video dimensions for Telegram player sizing
         try:
@@ -319,6 +319,8 @@ async def _send(client, chat_id, path, caption, thumb, cb, as_doc, uid=0):
 
         try:
             # Try with cover= first (PyroTGFork ≥ layer 166)
+            # cover= sends the poster as a full Photo at full resolution
+            # (NOT compressed to 200 KB — Telegram stores it at original quality)
             send_kwargs = dict(
                 chat_id=chat_id, video=path, caption=caption,
                 parse_mode=enums.ParseMode.HTML, duration=duration or 0,
