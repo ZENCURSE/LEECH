@@ -1,25 +1,31 @@
 """
-thumbnail.py — NXTL Unified Thumbnail Engine (rewrite v2)
+thumbnail.py — NXTL Unified Thumbnail Engine (rewrite v3)
 ==========================================================
 Target output: 1280×720 landscape JPEG showing the ACTUAL movie poster
 with real logo/text from the original movie artwork.
 
 Priority chain:
-  1. Fanart.tv  hdmovielogo + moviebackground  (best — real logo PNG + backdrop)
-  2. TMDB       backdrop + logo PNG             (from /images endpoint)
+  1. Fanart.tv  hdmovielogo + moviebackground  (best — real logo PNG + clean backdrop)
+               Falls back to Metahub logo if Fanart has no logo
+  2. TMDB       textless backdrop + logo PNG   (iso_639_1=null backdrops only)
+               Falls back to Metahub logo if TMDB has no logo
   3. TMDB       actual movie poster (portrait)  → cinema landscape conversion
   4. OMDB       poster URL                      → cinema landscape conversion
-  5. Fanart.tv  moviethumb (pre-composited)
+  5. Fanart.tv  moviethumb (pre-composited, used AS-IS — no extra logo)
   6. iTunes     portrait poster                 → landscape conversion
   7. ffmpeg     frame at 30% of video duration
-  8. Title card (always succeeds — guaranteed fallback)
+  (no title card fallback — returns False/None if nothing found)
 
 Key design decisions:
-  - TMDB poster is a REAL movie poster with actual movie logo text in it
+  - DOUBLE LOGO PREVENTION: logo PNG is ONLY composited onto textless/clean
+    backdrops (iso_639_1=null for TMDB, moviebackground for Fanart).
+    English/language backdrops that already have the title baked in are
+    NEVER used as a base for logo compositing.
+  - Fanart moviethumb (pre-composited) is used as-is — no further logo added.
+  - Metahub (metahub.space) is tried as a logo source ONLY when Fanart and
+    TMDB both fail to provide a logo, ensuring a single logo composite.
   - Cover (cover= param) is saved at FULL QUALITY (up to 5 MB) — not capped at 200 KB
   - thumb= (file list preview) is still capped at 200 KB / 320×320
-  - Logos from Fanart/TMDB are transparent PNGs composited onto backdrop
-  - Portrait posters are converted to cinematic landscape via blur+overlay
   - Cache keyed by md5(title+year), 30-day TTL, 500 MB cap
 """
 
@@ -41,6 +47,7 @@ _W1280        = "https://image.tmdb.org/t/p/w1280"
 _W780         = "https://image.tmdb.org/t/p/w780"
 _FANART_MOVIE = "https://webservice.fanart.tv/v3/movies"
 _FANART_TV    = "https://webservice.fanart.tv/v3/tv"
+_METAHUB      = "https://metahub.space/logo/medium/{imdb_id}/img"
 _OMDB         = "https://www.omdbapi.com/"
 _UA           = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 _TIMEOUT      = aiohttp.ClientTimeout(total=30, connect=10)
@@ -440,6 +447,30 @@ def _poster_to_landscape(src: str, out: str, title: str = "") -> bool:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  METAHUB  (transparent PNG logo by IMDb ID)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async def _metahub_logo(session, imdb_id: str) -> bytes | None:
+    """
+    Fetch a transparent PNG logo from metahub.space using the IMDb ID.
+    Returns raw PNG bytes on success, None otherwise.
+
+    Only called when Fanart.tv and TMDB both failed to supply a logo,
+    so there is no risk of double-compositing an existing logo.
+    """
+    if not imdb_id:
+        return None
+    url = _METAHUB.format(imdb_id=imdb_id)
+    data = await _get_bytes(session, url)
+    if not data:
+        return None
+    # Sanity-check: must be a real PNG (at least 1 KB, starts with PNG magic)
+    if len(data) < 1024 or data[:4] != b"\x89PNG":
+        return None
+    return data
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  TMDB
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -468,9 +499,11 @@ async def _tmdb_thumb(session, tmdb_id, mtype, dest, title) -> bool:
     """
     Fetch thumbnail from TMDB.
     Priority:
-      1. Backdrop + Logo PNG composite (real movie logo)
+      1. Textless backdrop + Logo PNG composite  ← only iso_639_1=null backdrops
+         to prevent double-logo when a backdrop already has the title baked in.
+         Logo sources tried in order: TMDB logos → Metahub
       2. Actual movie poster → cinematic landscape (real poster with movie title art)
-      3. Backdrop + text overlay
+      3. Any backdrop + text overlay (last resort — draws plain text, no logo PNG)
     """
     key = getattr(config, "TMDB_API_KEY", "").strip()
     if not key:
@@ -486,17 +519,28 @@ async def _tmdb_thumb(session, tmdb_id, mtype, dest, title) -> bool:
                                      int(x.get("vote_count", 0))),
                       reverse=True)
 
-    backdrops = _sort(data.get("backdrops", []))
-    logos     = _sort([l for l in data.get("logos", [])
-                       if l.get("file_path", "").endswith(".png")])
-    posters   = _sort(data.get("posters", []))
+    all_backdrops = _sort(data.get("backdrops", []))
+    logos         = _sort([l for l in data.get("logos", [])
+                           if l.get("file_path", "").endswith(".png")])
+    posters       = _sort(data.get("posters", []))
+
+    # ── Textless backdrops only — no baked-in title art ──────
+    # iso_639_1 == null means the backdrop has NO language overlay / title text.
+    # Using a language backdrop (e.g. "en") with a logo composited on top
+    # would produce a DOUBLE LOGO (one baked-in + one composited).
+    textless_backdrops = [b for b in all_backdrops
+                          if not b.get("iso_639_1")]
 
     bg_tmp     = dest + ".tm_bg.tmp"
     poster_tmp = dest + ".tm_poster.tmp"
 
-    # ── Strategy 1: Backdrop + Logo PNG ──────────────────────
-    if logos and backdrops:
-        for bd in backdrops[:5]:
+    # ── Strategy 1: Textless backdrop + Logo PNG (no double logo) ─
+    if textless_backdrops:
+        # Get IMDb ID now so Metahub is available as logo fallback
+        ext     = await _external_ids(session, tmdb_id, mtype)
+        imdb_id = ext.get("imdb_id", "")
+
+        for bd in textless_backdrops[:5]:
             fp = bd.get("file_path", "")
             if not fp:
                 continue
@@ -506,26 +550,35 @@ async def _tmdb_thumb(session, tmdb_id, mtype, dest, title) -> bool:
                 _rm(bg_tmp)
                 continue
 
+            # Try TMDB logos first
+            logo_success = False
             for logo in logos[:5]:
                 lfp    = logo.get("file_path", "")
                 lbytes = await _get_bytes(session, _ORIG + lfp) if lfp else None
                 if lbytes and _composite(bg_tmp, lbytes, dest, title):
                     _rm(bg_tmp)
-                    LOGGER.info("[Thumb] ✅ TMDB: backdrop + logo PNG")
+                    LOGGER.info("[Thumb] ✅ TMDB: textless backdrop + TMDB logo")
+                    return True
+
+            # TMDB logos failed — try Metahub logo on same textless backdrop
+            if imdb_id:
+                mh_bytes = await _metahub_logo(session, imdb_id)
+                if mh_bytes and _composite(bg_tmp, mh_bytes, dest, title):
+                    _rm(bg_tmp)
+                    LOGGER.info("[Thumb] ✅ TMDB: textless backdrop + Metahub logo")
                     return True
 
             _rm(bg_tmp)
 
     # ── Strategy 2: Actual Movie Poster → landscape ───────────
-    # This is the REAL movie poster with the actual movie logo text baked in
+    # The REAL movie poster already has the actual movie logo text baked in.
+    # No additional logo is composited here — zero risk of double logo.
     if posters:
         for poster in posters[:4]:
             fp = poster.get("file_path", "")
             if not fp:
                 continue
-            # Use original size for best quality
             if not await _download_raw(session, _ORIG + fp, poster_tmp):
-                # Fallback to w780
                 if not await _download_raw(session, _W780 + fp, poster_tmp):
                     continue
             if not _ok(poster_tmp):
@@ -538,8 +591,11 @@ async def _tmdb_thumb(session, tmdb_id, mtype, dest, title) -> bool:
                 return True
             _rm(poster_tmp)
 
-    # ── Strategy 3: Backdrop + text overlay ──────────────────
-    for bd in backdrops[:4]:
+    # ── Strategy 3: Any backdrop + text overlay (last resort) ──
+    # Only draw plain text — the backdrop may already have a title baked in,
+    # but _text_overlay draws text only when no logo PNG is available, so
+    # double-logo cannot happen here (text ≠ PNG logo composite).
+    for bd in all_backdrops[:4]:
         fp = bd.get("file_path", "")
         if not fp:
             continue
@@ -572,14 +628,16 @@ async def _fanart_thumb(session, tmdb_id, mtype, dest, title) -> bool:
         fid          = ext.get("imdb_id", "")
         base_url     = _FANART_MOVIE
         logo_keys    = ["hdmovielogo", "movielogo"]
-        bg_keys      = ["moviebackground", "moviethumb"]
-        precomp_keys = ["moviethumb"]
+        # moviebackground = clean backdrop (no logo baked in) — safe for compositing
+        # moviethumb      = pre-composited backdrop+logo — use as-is, never composite onto
+        clean_bg_keys   = ["moviebackground"]
+        precomp_keys    = ["moviethumb"]
     else:
         fid          = str(ext.get("tvdb_id", ""))
         base_url     = _FANART_TV
         logo_keys    = ["hdtvlogo", "tvlogo", "clearlogo"]
-        bg_keys      = ["showbackground", "tvthumb"]
-        precomp_keys = ["tvthumb"]
+        clean_bg_keys   = ["showbackground"]
+        precomp_keys    = ["tvthumb"]
 
     if not fid:
         LOGGER.debug(f"[Thumb][Fanart] no external ID tmdb={tmdb_id}")
@@ -594,13 +652,15 @@ async def _fanart_thumb(session, tmdb_id, mtype, dest, title) -> bool:
         items = data.get(key, [])
         return sorted(items, key=lambda x: int(x.get("likes", 0)), reverse=True)[:n]
 
-    logos   = []
+    logos = []
     for k in logo_keys:
         logos.extend(_top(k, 4))
 
-    bgs = []
-    for k in bg_keys:
-        bgs.extend(_top(k, 4))
+    # Clean backgrounds only — these have NO baked-in logo/title text.
+    # Never use moviethumb here: it already has a logo composited in it.
+    clean_bgs = []
+    for k in clean_bg_keys:
+        clean_bgs.extend(_top(k, 4))
 
     precomp = []
     for k in precomp_keys:
@@ -608,9 +668,11 @@ async def _fanart_thumb(session, tmdb_id, mtype, dest, title) -> bool:
 
     bg_tmp = dest + ".fa_bg.tmp"
 
-    # ── Strategy 1: backdrop + logo composite ────────────────
-    if logos and bgs:
-        for bg_art in bgs[:4]:
+    # ── Strategy 1: Clean backdrop + logo composite ───────────
+    # Only use moviebackground (textless) + logo PNG.
+    # moviethumb is intentionally excluded — it already has the logo baked in.
+    if logos and clean_bgs:
+        for bg_art in clean_bgs[:4]:
             url = bg_art.get("url", "")
             if not url:
                 continue
@@ -620,21 +682,34 @@ async def _fanart_thumb(session, tmdb_id, mtype, dest, title) -> bool:
                 _rm(bg_tmp)
                 continue
 
+            logo_placed = False
             for logo_art in logos[:4]:
                 lurl   = logo_art.get("url", "")
                 lbytes = await _get_bytes(session, lurl) if lurl else None
                 if lbytes and _composite(bg_tmp, lbytes, dest, title):
                     _rm(bg_tmp)
-                    LOGGER.info("[Thumb] ✅ Fanart: backdrop + logo")
+                    LOGGER.info("[Thumb] ✅ Fanart: clean backdrop + logo")
                     return True
 
+            # Fanart logos failed — try Metahub logo on same clean backdrop
+            imdb_id = ext.get("imdb_id", "")
+            if imdb_id:
+                mh_bytes = await _metahub_logo(session, imdb_id)
+                if mh_bytes and _composite(bg_tmp, mh_bytes, dest, title):
+                    _rm(bg_tmp)
+                    LOGGER.info("[Thumb] ✅ Fanart: clean backdrop + Metahub logo")
+                    return True
+
+            # No logo at all — just text overlay on the clean background
             if _text_overlay(bg_tmp, dest, title):
                 _rm(bg_tmp)
-                LOGGER.info("[Thumb] ✅ Fanart: backdrop + text")
+                LOGGER.info("[Thumb] ✅ Fanart: clean backdrop + text")
                 return True
             _rm(bg_tmp)
 
-    # ── Strategy 2: pre-composited moviethumb ────────────────
+    # ── Strategy 2: Pre-composited moviethumb — use as-is ────
+    # These already have backdrop + logo merged by Fanart.tv artists.
+    # DO NOT composite any additional logo onto them.
     for art in precomp[:3]:
         url = art.get("url", "")
         if not url:
@@ -651,15 +726,15 @@ async def _fanart_thumb(session, tmdb_id, mtype, dest, title) -> bool:
             LOGGER.info("[Thumb] ✅ Fanart: moviethumb (pre-composited)")
             return True
 
-    # ── Strategy 3: background only + text ───────────────────
-    for bg_art in bgs[:3]:
+    # ── Strategy 3: Clean background + text (no logos available) ─
+    for bg_art in clean_bgs[:3]:
         url = bg_art.get("url", "")
         if not url:
             continue
         if await _download(session, url, bg_tmp) and _ok(bg_tmp):
             if _text_overlay(bg_tmp, dest, title):
                 _rm(bg_tmp)
-                LOGGER.info("[Thumb] ✅ Fanart: bg + text fallback")
+                LOGGER.info("[Thumb] ✅ Fanart: clean bg + text fallback")
                 return True
             _rm(bg_tmp)
 
