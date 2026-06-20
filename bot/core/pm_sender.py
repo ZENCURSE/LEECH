@@ -90,13 +90,18 @@ async def _raw(session: aiohttp.ClientSession, url: str) -> bytes | None:
 
 def _poster_to_landscape(data: bytes, title: str = "") -> bytes | None:
     """
-    Convert a portrait movie poster to 1280×720 cinematic landscape JPEG.
+    Convert a portrait movie poster to 1280x720 cinematic landscape JPEG.
+
+    The POSTER IS THE HERO - placed CENTER STAGE at full canvas height.
+    The actual movie title artwork baked into the poster is fully visible.
 
     Layout:
-      - Blurred, darkened version of the poster fills the entire 1280×720 background
-      - Full-height poster pinned to the RIGHT (no cropping — real logo visible)
-      - Left side: gradient + movie title text
-      - Result: Netflix-style banner with actual movie artwork visible
+      - Poster fills FULL HEIGHT of canvas, centered horizontally
+      - Both sides: blurred, darkened, desaturated version of the same poster
+        (seamlessly extends the poster colour palette as cinematic wings)
+      - Soft vignette edges blend the sides into the center poster
+      - NO extra text -- the poster own title art IS the title
+      - Soft drop shadow around the poster for depth
     """
     try:
         from PIL import Image, ImageDraw, ImageFilter, ImageEnhance
@@ -104,101 +109,63 @@ def _poster_to_landscape(data: bytes, title: str = "") -> bytes | None:
         img    = Image.open(io.BytesIO(data)).convert("RGB")
         iw, ih = img.size
 
-        # Background: blurred dark version of the poster
-        sc  = max(_W / iw, _H / ih)
-        bg  = img.resize((int(iw * sc), int(ih * sc)), Image.LANCZOS)
+        # Scale poster to fill FULL canvas height
+        scale   = _H / ih
+        fw, fh  = int(iw * scale), int(ih * scale)
+        if fw > _W:   # unusually wide poster -- fit by width instead
+            scale = _W / iw
+            fw, fh = int(iw * scale), int(ih * scale)
+
+        poster_main = img.resize((fw, fh), Image.LANCZOS)
+
+        # Background: same poster stretched wide, heavily blurred + darkened
+        bg_scale = max(_W / iw, _H / ih) * 1.05
+        bg = img.resize((int(iw * bg_scale), int(ih * bg_scale)), Image.LANCZOS)
         bw, bh = bg.size
-        bg  = bg.crop(((bw - _W) // 2, (bh - _H) // 2,
-                        (bw - _W) // 2 + _W, (bh - _H) // 2 + _H))
-        bg  = bg.filter(ImageFilter.GaussianBlur(radius=24))
-        bg  = ImageEnhance.Brightness(bg).enhance(0.3)
+        bx = (bw - _W) // 2
+        by = (bh - _H) // 2
+        bg = bg.crop((bx, by, bx + _W, by + _H))
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=32))
+        bg = ImageEnhance.Brightness(bg).enhance(0.28)
+        # Slight desaturate for cinematic look
+        bg_grey = bg.convert("L").convert("RGB")
+        bg = Image.blend(bg, bg_grey, alpha=0.4)
+
         canvas = bg.convert("RGBA")
 
-        # Poster: right side, full height, no crop
-        margin  = 18
-        avail_h = _H - margin * 2
-        sc2     = avail_h / ih
-        fw, fh  = int(iw * sc2), int(ih * sc2)
+        # Center the poster
+        px = (_W - fw) // 2
+        py = (_H - fh) // 2
 
-        # Cap width at 45% of canvas
-        if fw > int(_W * 0.45):
-            sc2 = int(_W * 0.45) / iw
-            fw, fh = int(iw * sc2), int(ih * sc2)
+        # Drop shadow behind poster
+        shadow_pad = 24
+        shadow = Image.new("RGBA", (fw + shadow_pad * 2, fh + shadow_pad * 2), (0, 0, 0, 0))
+        sb     = Image.new("RGBA", (fw, fh), (0, 0, 0, 180))
+        shadow.paste(sb, (shadow_pad, shadow_pad))
+        shadow = shadow.filter(ImageFilter.GaussianBlur(radius=22))
+        canvas.alpha_composite(shadow, dest=(max(0, px - shadow_pad), max(0, py - shadow_pad)))
 
-        poster = img.resize((fw, fh), Image.LANCZOS)
-        px     = _W - fw - margin
-        py     = (_H - fh) // 2
+        # Paste the real poster -- CENTERED, FULL HEIGHT
+        canvas.alpha_composite(poster_main.convert("RGBA"), dest=(px, py))
 
-        # Shadow behind poster
-        shadow = Image.new("RGBA", (fw + 28, fh + 28), (0, 0, 0, 0))
-        sb     = Image.new("RGBA", (fw, fh), (0, 0, 0, 170))
-        shadow.paste(sb, (14, 14))
-        shadow = shadow.filter(ImageFilter.GaussianBlur(radius=18))
-        canvas.alpha_composite(shadow, dest=(max(0, px - 12), max(0, py - 12)))
-        canvas.alpha_composite(poster.convert("RGBA"), dest=(px, py))
-
-        # Left gradient + title text
-        text_w = px - 20
-        if text_w > 80 and title:
-            _bold_fonts = [
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-                "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
-            ]
-
-            def _font(size):
-                from PIL import ImageFont
-                for p in _bold_fonts:
-                    if os.path.isfile(p):
-                        try: return ImageFont.truetype(p, size)
-                        except Exception: pass
-                return ImageFont.load_default()
-
-            grad = Image.new("RGBA", (text_w + 80, _H), (0, 0, 0, 0))
-            gd   = ImageDraw.Draw(grad)
-            for x in range(text_w + 80):
-                t     = min(1.0, x / max(text_w, 1))
-                alpha = int(190 * (1 - t ** 1.5))
+        # Vignette: soft dark edges left & right
+        vign_w = max(px + 40, 80)
+        for side_x, flip in ((0, False), (_W, True)):
+            vign = Image.new("RGBA", (vign_w, _H), (0, 0, 0, 0))
+            gd   = ImageDraw.Draw(vign)
+            for x in range(vign_w):
+                t     = 1.0 - (x / vign_w) ** 0.6
+                alpha = int(200 * t)
                 gd.line([(x, 0), (x, _H)], fill=(0, 0, 0, alpha))
-            canvas.alpha_composite(grad)
+            if flip:
+                vign = vign.transpose(Image.FLIP_LEFT_RIGHT)
+                canvas.alpha_composite(vign, dest=(_W - vign_w, 0))
+            else:
+                canvas.alpha_composite(vign, dest=(0, 0))
 
-            draw = ImageDraw.Draw(canvas)
-            for fs in (72, 60, 50, 42, 34):
-                font  = _font(fs)
-                words = title.upper().split()
-                lines, cur = [], ""
-                max_tw = text_w - 50
-                for w in words:
-                    test = f"{cur} {w}".strip()
-                    try:
-                        tw = draw.textbbox((0, 0), test, font=font)[2]
-                    except Exception:
-                        tw = len(test) * (fs // 2)
-                    if tw <= max_tw:
-                        cur = test
-                    else:
-                        if cur: lines.append(cur)
-                        cur = w
-                if cur: lines.append(cur)
-                if len(lines) <= 4:
-                    break
-
-            line_h = int(fs * 1.15)
-            ty     = (_H - len(lines) * line_h) // 2
-            for line in lines:
-                try:
-                    tw = draw.textbbox((0, 0), line, font=font)[2]
-                except Exception:
-                    tw = len(line) * (fs // 2)
-                lx = 48
-                draw.text((lx + 3, ty + 3), line, font=font, fill=(0, 0, 0, 200))
-                draw.text((lx, ty),         line, font=font, fill=(255, 255, 255, 255))
-                ty += line_h
-
-        # Export at FULL quality — this is what cover= will display
-        final = canvas.convert("RGB")
+        # Export at FULL quality
         buf = io.BytesIO()
-        final.save(buf, "JPEG", quality=95, subsampling=0, optimize=True)
+        canvas.convert("RGB").save(buf, "JPEG", quality=95, subsampling=0, optimize=True)
         result = buf.getvalue()
         return result if len(result) <= _COVER_MAX else None
 

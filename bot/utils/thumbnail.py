@@ -1,25 +1,26 @@
 """
-thumbnail.py — NXTL Unified Thumbnail Engine  (full rewrite)
-=============================================================
-Target output: 1280×720 landscape JPEG showing:
-  - Movie/show backdrop as background
-  - Actual movie/show logo (transparent PNG) composited on top
-  - Clean gradient so logo is always readable
+thumbnail.py — NXTL Unified Thumbnail Engine (rewrite v2)
+==========================================================
+Target output: 1280×720 landscape JPEG showing the ACTUAL movie poster
+with real logo/text from the original movie artwork.
 
 Priority chain:
-  1. Fanart.tv  hdmovielogo  + moviebackground  (best — logo + backdrop)
-  2. Fanart.tv  moviethumb                       (pre-composited landscape)
-  3. TMDB       backdrop + logo (from /images)
-  4. TMDB       backdrop + title text
-  5. iTunes     portrait poster → landscape conversion
-  6. ffmpeg     frame at 30% of video duration
-  7. Title card (always succeeds)
+  1. Fanart.tv  hdmovielogo + moviebackground  (best — real logo PNG + backdrop)
+  2. TMDB       backdrop + logo PNG             (from /images endpoint)
+  3. TMDB       actual movie poster (portrait)  → cinema landscape conversion
+  4. OMDB       poster URL                      → cinema landscape conversion
+  5. Fanart.tv  moviethumb (pre-composited)
+  6. iTunes     portrait poster                 → landscape conversion
+  7. ffmpeg     frame at 30% of video duration
+  8. Title card (always succeeds — guaranteed fallback)
 
 Key design decisions:
-  - Logos ALWAYS come from Fanart or TMDB /images, never synthetic text
-  - Backdrop is ALWAYS landscape — portrait posters are converted
-  - Disk cache keyed by md5(title+year), 30-day TTL, 500 MB cap
-  - Every source goes through _ok() quality gate before accepting
+  - TMDB poster is a REAL movie poster with actual movie logo text in it
+  - Cover (cover= param) is saved at FULL QUALITY (up to 5 MB) — not capped at 200 KB
+  - thumb= (file list preview) is still capped at 200 KB / 320×320
+  - Logos from Fanart/TMDB are transparent PNGs composited onto backdrop
+  - Portrait posters are converted to cinematic landscape via blur+overlay
+  - Cache keyed by md5(title+year), 30-day TTL, 500 MB cap
 """
 
 import asyncio
@@ -37,18 +38,23 @@ from bot import LOGGER
 _TMDB         = "https://api.themoviedb.org/3"
 _ORIG         = "https://image.tmdb.org/t/p/original"
 _W1280        = "https://image.tmdb.org/t/p/w1280"
+_W780         = "https://image.tmdb.org/t/p/w780"
 _FANART_MOVIE = "https://webservice.fanart.tv/v3/movies"
 _FANART_TV    = "https://webservice.fanart.tv/v3/tv"
+_OMDB         = "https://www.omdbapi.com/"
 _UA           = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-_TIMEOUT      = aiohttp.ClientTimeout(total=25, connect=8)
+_TIMEOUT      = aiohttp.ClientTimeout(total=30, connect=10)
 
 # ── Output spec ───────────────────────────────────────────────
-_W, _H        = 1280, 720
-_MAX_BYTES    = 200 * 1024     # Telegram 200 KB limit
-_MIN_BYTES    = 8_000          # reject tiny/broken images
+_W, _H         = 1280, 720
+_THUMB_MAX     = 200 * 1024      # 200 KB — Telegram thumb= hard limit
+_COVER_MAX     = 5 * 1024 * 1024 # 5 MB  — cover= can be full quality
+_MIN_BYTES     = 8_000
 
-# ── Cache dir (actual policy lives in thumb_store.py) ──────────
-_BASE_DIR   = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data")
+# ── Cache dir ─────────────────────────────────────────────────
+_BASE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data"
+)
 
 # ── Fonts ─────────────────────────────────────────────────────
 _BOLD = [
@@ -70,14 +76,18 @@ def _font(paths, size):
     from PIL import ImageFont
     for p in paths:
         if os.path.isfile(p):
-            try: return ImageFont.truetype(p, size)
-            except Exception: pass
+            try:
+                return ImageFont.truetype(p, size)
+            except Exception:
+                pass
     return ImageFont.load_default()
 
 
 def _rm(p):
-    try: os.remove(p)
-    except Exception: pass
+    try:
+        os.remove(p)
+    except Exception:
+        pass
 
 
 def _ok(path: str) -> bool:
@@ -92,24 +102,35 @@ def _ok(path: str) -> bool:
         return os.path.exists(path) and os.path.getsize(path) > _MIN_BYTES
 
 
-def _save_jpeg(img, dest: str) -> bool:
-    """Save PIL image as JPEG ≤ 200 KB."""
+def _save_jpeg_hq(img, dest: str) -> bool:
+    """Save PIL image as high-quality JPEG for cover= (up to 5 MB)."""
     try:
-        for q in (95, 88, 80, 72, 62):
+        img.save(dest, "JPEG", quality=95, subsampling=0, optimize=True)
+        if os.path.getsize(dest) <= _COVER_MAX:
+            return True
+        # If somehow over 5 MB, compress a bit
+        img.save(dest, "JPEG", quality=88, subsampling=0, optimize=True)
+        return True
+    except Exception as e:
+        LOGGER.debug(f"_save_jpeg_hq: {e}")
+        return False
+
+
+def _save_jpeg(img, dest: str) -> bool:
+    """Save PIL image as JPEG ≤ 200 KB (for thumb= small preview)."""
+    try:
+        for q in (92, 82, 72, 60, 50):
             img.save(dest, "JPEG", quality=q, subsampling=0, optimize=True)
-            if os.path.getsize(dest) <= _MAX_BYTES:
+            if os.path.getsize(dest) <= _THUMB_MAX:
                 return True
-        return True   # saved, just maybe over 200 KB
+        return True
     except Exception as e:
         LOGGER.debug(f"_save_jpeg: {e}")
         return False
 
 
 def _landscape_crop(img, w=_W, h=_H):
-    """
-    Centre-crop an image to exactly w×h, scaling to fill first.
-    Works on both landscape and portrait inputs.
-    """
+    """Centre-crop an image to exactly w×h, scaling to fill first."""
     from PIL import Image
     iw, ih = img.size
     scale  = max(w / iw, h / ih)
@@ -124,10 +145,6 @@ def _landscape_crop(img, w=_W, h=_H):
 #  DISK CACHE
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# ── Cache ─────────────────────────────────────────────────────
-# Delegated to thumb_store.py — single source of truth for cache dir,
-# TTL, and eviction policy. Avoids two systems writing to the same
-# directory with separate (possibly diverging) logic.
 from bot.utils.thumb_store import cache_get as _cache_get, cache_put as _cache_put
 
 
@@ -159,23 +176,39 @@ async def _get_bytes(session, url) -> bytes | None:
     return None
 
 
-async def _download(session, url, dest) -> bool:
+async def _download_raw(session, url, dest) -> bool:
+    """Download image to dest as-is (no PIL conversion — keeps original quality)."""
     data = await _get_bytes(session, url)
-    if not data: return False
+    if not data:
+        return False
+    try:
+        async with aiofiles.open(dest, "wb") as f:
+            await f.write(data)
+        return True
+    except Exception:
+        return False
+
+
+async def _download(session, url, dest) -> bool:
+    """Download image and convert to JPEG at high quality."""
+    data = await _get_bytes(session, url)
+    if not data:
+        return False
     try:
         from PIL import Image
         img = Image.open(io.BytesIO(data)).convert("RGB")
-        return _save_jpeg(img, dest)
+        return _save_jpeg_hq(img, dest)
     except Exception:
         try:
-            async with aiofiles.open(dest, "wb") as f: await f.write(data)
+            async with aiofiles.open(dest, "wb") as f:
+                await f.write(data)
             return True
         except Exception:
             return False
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  COMPOSITOR
+#  COMPOSITOR — logo PNG + backdrop
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 def _composite(bg_path: str, logo_bytes: bytes, dest: str, title: str = "") -> bool:
@@ -185,8 +218,8 @@ def _composite(bg_path: str, logo_bytes: bytes, dest: str, title: str = "") -> b
     Layout:
       - Backdrop fills 1280×720 (letterbox-cropped)
       - Soft dark gradient covers bottom 55% for contrast
-      - Logo placed bottom-left, max 500px wide × 180px tall
-      - Logo is white-normalized so dark logos stay visible on dark bgs
+      - Logo placed bottom-left, max 520px wide × 200px tall
+      - Logo brightness-normalized so it's always visible
       - Drop shadow underneath logo
     """
     try:
@@ -194,56 +227,54 @@ def _composite(bg_path: str, logo_bytes: bytes, dest: str, title: str = "") -> b
 
         W, H = _W, _H
 
-        # ── Background ───────────────────────────────────────
+        # Background
         bg     = Image.open(bg_path).convert("RGB")
         canvas = _landscape_crop(bg, W, H).convert("RGBA")
 
-        # ── Cinematic gradient (bottom 60%) ───────────────────
+        # Cinematic gradient (bottom 60%)
         grad = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         gd   = ImageDraw.Draw(grad)
         for y in range(H):
-            t     = max(0.0, (y - H * 0.38) / (H * 0.62))
-            alpha = int(210 * (t ** 1.4))
+            t     = max(0.0, (y - H * 0.35) / (H * 0.65))
+            alpha = int(220 * (t ** 1.3))
             gd.line([(0, y), (W, y)], fill=(0, 0, 0, alpha))
         canvas.alpha_composite(grad)
 
-        # ── Logo ─────────────────────────────────────────────
+        # Logo
         logo   = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
         lw, lh = logo.size
 
-        # Scale: max 500px wide, max 180px tall
-        max_lw, max_lh = 500, 180
+        # Scale: max 520px wide, max 200px tall, never upscale
+        max_lw, max_lh = 520, 200
         sc   = min(max_lw / lw, max_lh / lh, 1.0)
         lw   = max(int(lw * sc), 1)
         lh   = max(int(lh * sc), 1)
         logo = logo.resize((lw, lh), Image.LANCZOS)
 
-        # Normalize: ensure logo is bright enough on dark gradient
-        # Extract alpha, boost brightness of RGB channels
+        # Brightness normalize
         r, g, b, a = logo.split()
         rgb = Image.merge("RGB", (r, g, b))
-        rgb = ImageEnhance.Brightness(rgb).enhance(1.15)
+        rgb = ImageEnhance.Brightness(rgb).enhance(1.2)
         r, g, b = rgb.split()
         logo = Image.merge("RGBA", (r, g, b, a))
 
         # Position: bottom-left with padding
-        pad = 52
+        pad = 56
         lx  = pad
         ly  = H - lh - pad
 
         # Drop shadow
-        shadow = Image.new("RGBA", (lw + 24, lh + 24), (0, 0, 0, 0))
-        mask   = a.point(lambda p: int(p * 0.5))
+        shadow = Image.new("RGBA", (lw + 28, lh + 28), (0, 0, 0, 0))
+        mask   = a.point(lambda p: int(p * 0.55))
         black  = Image.new("RGB", (lw, lh), (0, 0, 0))
         sh_img = Image.merge("RGBA", (*black.split(), mask))
-        shadow.paste(sh_img, (12, 12))
-        shadow = shadow.filter(ImageFilter.GaussianBlur(radius=10))
-        canvas.alpha_composite(shadow, dest=(max(0, lx - 8), max(0, ly - 8)))
-
+        shadow.paste(sh_img, (14, 14))
+        shadow = shadow.filter(ImageFilter.GaussianBlur(radius=12))
+        canvas.alpha_composite(shadow, dest=(max(0, lx - 10), max(0, ly - 10)))
         canvas.alpha_composite(logo, dest=(lx, ly))
 
         final = canvas.convert("RGB")
-        return _save_jpeg(final, dest)
+        return _save_jpeg_hq(final, dest)
 
     except Exception as e:
         LOGGER.debug(f"_composite: {e}")
@@ -259,15 +290,15 @@ def _text_overlay(bg_path: str, dest: str, title: str) -> bool:
         bg     = Image.open(bg_path).convert("RGB")
         canvas = _landscape_crop(bg, W, H).convert("RGBA")
 
-        grad = Image.new("RGBA", (W, 240), (0, 0, 0, 0))
+        grad = Image.new("RGBA", (W, 260), (0, 0, 0, 0))
         gd   = ImageDraw.Draw(grad)
-        for y in range(240):
-            alpha = int(230 * (y / 239) ** 1.3)
+        for y in range(260):
+            alpha = int(235 * (y / 259) ** 1.2)
             gd.line([(0, y), (W, y)], fill=(0, 0, 0, alpha))
-        canvas.alpha_composite(grad, dest=(0, H - 240))
+        canvas.alpha_composite(grad, dest=(0, H - 260))
 
         draw  = ImageDraw.Draw(canvas)
-        font  = _font(_BOLD, 64)
+        font  = _font(_BOLD, 68)
         words = title.upper().split()
         lines, cur = [], ""
         for w in words:
@@ -275,29 +306,137 @@ def _text_overlay(bg_path: str, dest: str, title: str) -> bool:
             try:
                 bw = draw.textbbox((0, 0), test, font=font)[2]
             except Exception:
-                bw = len(test) * 30
-            if bw <= W - 120: cur = test
+                bw = len(test) * 32
+            if bw <= W - 130:
+                cur = test
             else:
-                if cur: lines.append(cur)
+                if cur:
+                    lines.append(cur)
                 cur = w
-        if cur: lines.append(cur)
+        if cur:
+            lines.append(cur)
 
-        lh = 74
-        ty = H - 42 - len(lines) * lh
+        lh = 78
+        ty = H - 50 - len(lines) * lh
         for line in lines:
-            try: lw = draw.textbbox((0, 0), line, font=font)[2]
-            except Exception: lw = len(line) * 32
-            lx = (W - lw) // 2
+            try:
+                tw = draw.textbbox((0, 0), line, font=font)[2]
+            except Exception:
+                tw = len(line) * 34
+            lx = (W - tw) // 2
             draw.text((lx + 3, ty + 3), line, font=font, fill=(0, 0, 0, 180))
             draw.text((lx, ty),         line, font=font, fill=(255, 255, 255, 255))
             ty += lh
 
-        return _save_jpeg(canvas.convert("RGB"), dest)
+        return _save_jpeg_hq(canvas.convert("RGB"), dest)
     except Exception as e:
         LOGGER.debug(f"_text_overlay: {e}")
         try:
-            import shutil; shutil.copy2(bg_path, dest); return True
-        except Exception: return False
+            import shutil
+            shutil.copy2(bg_path, dest)
+            return True
+        except Exception:
+            return False
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  CINEMA LANDSCAPE from PORTRAIT POSTER
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _poster_to_landscape(src: str, out: str, title: str = "") -> bool:
+    """
+    Convert an actual movie poster (portrait) to 1280×720 cinematic landscape.
+
+    The POSTER IS THE HERO — placed CENTER STAGE at full height.
+    The actual movie title artwork baked into the poster is fully visible.
+
+    Layout:
+      - Poster fills the FULL height of the canvas, centered horizontally
+      - Both sides: blurred, colour-shifted version of the same poster
+        (stretched to fill) — seamlessly extends the poster's colour palette
+      - Soft vignette edges blend the sides into the center poster
+      - NO extra text drawn — the poster's own title art is the title
+      - Thin cinematic letterbox bars (top/bottom) if poster is very wide
+      - Soft drop shadow around the poster for depth
+
+    Result: looks like a real movie banner — the poster artwork, including
+    its logo/title text, is the dominant visual at maximum readable size.
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFilter, ImageEnhance
+
+        W, H = _W, _H
+        img  = Image.open(src).convert("RGB")
+        iw, ih = img.size
+
+        # ── Scale poster to fill full canvas height ────────────
+        # Poster gets as tall as the canvas — title text in poster is LARGE
+        scale   = H / ih
+        fw, fh  = int(iw * scale), int(ih * scale)
+
+        # If the scaled poster is wider than the canvas, scale by width instead
+        # (handles unusually wide posters)
+        if fw > W:
+            scale = W / iw
+            fw, fh = int(iw * scale), int(ih * scale)
+
+        poster_main = img.resize((fw, fh), Image.LANCZOS)
+
+        # ── Background: blurred stretched poster fills both sides ──
+        # Use the same poster stretched wide — keeps the colour palette consistent
+        bg_scale = max(W / iw, H / ih) * 1.05   # slightly oversized to avoid edge artifacts
+        bg = img.resize((int(iw * bg_scale), int(ih * bg_scale)), Image.LANCZOS)
+        bw, bh = bg.size
+        # Center crop to exactly W×H
+        bx = (bw - W) // 2
+        by = (bh - H) // 2
+        bg = bg.crop((bx, by, bx + W, by + H))
+        # Heavy blur + strong darken so the sides don't compete with the poster
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=32))
+        bg = ImageEnhance.Brightness(bg).enhance(0.28)
+        # Slight colour desaturate so blurred sides look cinematic, not distracting
+        bg_grey  = bg.convert("L").convert("RGB")
+        bg = Image.blend(bg, bg_grey, alpha=0.4)
+
+        canvas = bg.convert("RGBA")
+
+        # ── Center the poster on canvas ────────────────────────
+        px = (W - fw) // 2
+        py = (H - fh) // 2
+
+        # Soft drop shadow (rendered before poster so it's behind it)
+        shadow_pad = 24
+        shadow = Image.new("RGBA", (fw + shadow_pad * 2, fh + shadow_pad * 2), (0, 0, 0, 0))
+        sb     = Image.new("RGBA", (fw, fh), (0, 0, 0, 180))
+        shadow.paste(sb, (shadow_pad, shadow_pad))
+        shadow = shadow.filter(ImageFilter.GaussianBlur(radius=22))
+        sx = px - shadow_pad
+        sy = py - shadow_pad
+        canvas.alpha_composite(shadow, dest=(max(0, sx), max(0, sy)))
+
+        # ── Paste the real poster — CENTERED, FULL HEIGHT ──────
+        canvas.alpha_composite(poster_main.convert("RGBA"), dest=(px, py))
+
+        # ── Vignette: soft dark edges left & right to frame poster ─
+        # Fade from dark (edges) to transparent (where poster is)
+        vign_w = max(px + 40, 80)   # covers the blurred side + bleeds slightly over poster edge
+        for side_x, direction in ((0, 1), (W, -1)):
+            vign = Image.new("RGBA", (vign_w, H), (0, 0, 0, 0))
+            gd   = ImageDraw.Draw(vign)
+            for x in range(vign_w):
+                t     = 1.0 - (x / vign_w) ** 0.6   # aggressive at edge, soft toward center
+                alpha = int(200 * t)
+                gd.line([(x, 0), (x, H)], fill=(0, 0, 0, alpha))
+            if direction == 1:
+                canvas.alpha_composite(vign, dest=(0, 0))
+            else:
+                canvas.alpha_composite(vign.transpose(Image.FLIP_LEFT_RIGHT),
+                                       dest=(W - vign_w, 0))
+
+        return _save_jpeg_hq(canvas.convert("RGB"), out)
+    except Exception as e:
+        LOGGER.debug(f"_poster_to_landscape: {e}")
+        return False
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -306,7 +445,8 @@ def _text_overlay(bg_path: str, dest: str, title: str) -> bool:
 
 async def _tmdb_search(session, title: str, year) -> tuple[int | None, str]:
     key = getattr(config, "TMDB_API_KEY", "").strip()
-    if not key: return None, "movie"
+    if not key:
+        return None, "movie"
     for mtype in ("movie", "tv"):
         params = {"api_key": key, "query": title, "include_adult": "false"}
         if year:
@@ -325,8 +465,16 @@ async def _external_ids(session, tmdb_id, mtype) -> dict:
 
 
 async def _tmdb_thumb(session, tmdb_id, mtype, dest, title) -> bool:
+    """
+    Fetch thumbnail from TMDB.
+    Priority:
+      1. Backdrop + Logo PNG composite (real movie logo)
+      2. Actual movie poster → cinematic landscape (real poster with movie title art)
+      3. Backdrop + text overlay
+    """
     key = getattr(config, "TMDB_API_KEY", "").strip()
-    if not key: return False
+    if not key:
+        return False
 
     data = await _get_json(session, f"{_TMDB}/{mtype}/{tmdb_id}/images",
                            {"api_key": key,
@@ -341,28 +489,68 @@ async def _tmdb_thumb(session, tmdb_id, mtype, dest, title) -> bool:
     backdrops = _sort(data.get("backdrops", []))
     logos     = _sort([l for l in data.get("logos", [])
                        if l.get("file_path", "").endswith(".png")])
+    posters   = _sort(data.get("posters", []))
 
-    bg_tmp = dest + ".tm_bg.tmp"
+    bg_tmp     = dest + ".tm_bg.tmp"
+    poster_tmp = dest + ".tm_poster.tmp"
 
-    for bd in backdrops[:6]:
-        fp = bd.get("file_path", "")
-        if not fp: continue
-        if not await _download(session, _W1280 + fp, bg_tmp): continue
-        if not _ok(bg_tmp): _rm(bg_tmp); continue
-
-        # Try each logo
-        for logo in logos[:6]:
-            lfp  = logo.get("file_path", "")
-            lbytes = await _get_bytes(session, _ORIG + lfp) if lfp else None
-            if lbytes and _composite(bg_tmp, lbytes, dest, title):
+    # ── Strategy 1: Backdrop + Logo PNG ──────────────────────
+    if logos and backdrops:
+        for bd in backdrops[:5]:
+            fp = bd.get("file_path", "")
+            if not fp:
+                continue
+            if not await _download(session, _W1280 + fp, bg_tmp):
+                continue
+            if not _ok(bg_tmp):
                 _rm(bg_tmp)
-                LOGGER.info("[Thumb] ✅ TMDB: backdrop + logo")
-                return True
+                continue
 
-        # No logo → text overlay
+            for logo in logos[:5]:
+                lfp    = logo.get("file_path", "")
+                lbytes = await _get_bytes(session, _ORIG + lfp) if lfp else None
+                if lbytes and _composite(bg_tmp, lbytes, dest, title):
+                    _rm(bg_tmp)
+                    LOGGER.info("[Thumb] ✅ TMDB: backdrop + logo PNG")
+                    return True
+
+            _rm(bg_tmp)
+
+    # ── Strategy 2: Actual Movie Poster → landscape ───────────
+    # This is the REAL movie poster with the actual movie logo text baked in
+    if posters:
+        for poster in posters[:4]:
+            fp = poster.get("file_path", "")
+            if not fp:
+                continue
+            # Use original size for best quality
+            if not await _download_raw(session, _ORIG + fp, poster_tmp):
+                # Fallback to w780
+                if not await _download_raw(session, _W780 + fp, poster_tmp):
+                    continue
+            if not _ok(poster_tmp):
+                _rm(poster_tmp)
+                continue
+
+            if _poster_to_landscape(poster_tmp, dest, title):
+                _rm(poster_tmp)
+                LOGGER.info("[Thumb] ✅ TMDB: actual movie poster → landscape")
+                return True
+            _rm(poster_tmp)
+
+    # ── Strategy 3: Backdrop + text overlay ──────────────────
+    for bd in backdrops[:4]:
+        fp = bd.get("file_path", "")
+        if not fp:
+            continue
+        if not await _download(session, _W1280 + fp, bg_tmp):
+            continue
+        if not _ok(bg_tmp):
+            _rm(bg_tmp)
+            continue
         if _text_overlay(bg_tmp, dest, title):
             _rm(bg_tmp)
-            LOGGER.info("[Thumb] ✅ TMDB: backdrop + text")
+            LOGGER.info("[Thumb] ✅ TMDB: backdrop + text overlay")
             return True
         _rm(bg_tmp)
 
@@ -375,22 +563,20 @@ async def _tmdb_thumb(session, tmdb_id, mtype, dest, title) -> bool:
 
 async def _fanart_thumb(session, tmdb_id, mtype, dest, title) -> bool:
     fa_key = getattr(config, "FANART_API_KEY", "").strip()
-    if not fa_key: return False
+    if not fa_key:
+        return False
 
-    # Get external IDs (Fanart needs IMDB id for movies, TVDB id for TV)
     ext = await _external_ids(session, tmdb_id, mtype)
 
     if mtype == "movie":
-        fid      = ext.get("imdb_id", "")
-        base_url = _FANART_MOVIE
-        # Keys in priority order — all possible landscape/logo types
-        logo_keys = ["hdmovielogo", "movielogo"]
-        bg_keys   = ["moviebackground", "moviethumb"]
-        # moviethumb is already composited (logo + backdrop) — ideal
+        fid          = ext.get("imdb_id", "")
+        base_url     = _FANART_MOVIE
+        logo_keys    = ["hdmovielogo", "movielogo"]
+        bg_keys      = ["moviebackground", "moviethumb"]
         precomp_keys = ["moviethumb"]
     else:
-        fid      = str(ext.get("tvdb_id", ""))
-        base_url = _FANART_TV
+        fid          = str(ext.get("tvdb_id", ""))
+        base_url     = _FANART_TV
         logo_keys    = ["hdtvlogo", "tvlogo", "clearlogo"]
         bg_keys      = ["showbackground", "tvthumb"]
         precomp_keys = ["tvthumb"]
@@ -404,16 +590,15 @@ async def _fanart_thumb(session, tmdb_id, mtype, dest, title) -> bool:
         LOGGER.debug(f"[Thumb][Fanart] no data for {fid}")
         return False
 
-    def _top(key, n=6):
+    def _top(key, n=5):
         items = data.get(key, [])
         return sorted(items, key=lambda x: int(x.get("likes", 0)), reverse=True)[:n]
 
-    # Collect all available logos and backgrounds
     logos   = []
     for k in logo_keys:
         logos.extend(_top(k, 4))
 
-    bgs     = []
+    bgs = []
     for k in bg_keys:
         bgs.extend(_top(k, 4))
 
@@ -427,9 +612,13 @@ async def _fanart_thumb(session, tmdb_id, mtype, dest, title) -> bool:
     if logos and bgs:
         for bg_art in bgs[:4]:
             url = bg_art.get("url", "")
-            if not url: continue
-            if not await _download(session, url, bg_tmp): continue
-            if not _ok(bg_tmp): _rm(bg_tmp); continue
+            if not url:
+                continue
+            if not await _download(session, url, bg_tmp):
+                continue
+            if not _ok(bg_tmp):
+                _rm(bg_tmp)
+                continue
 
             for logo_art in logos[:4]:
                 lurl   = logo_art.get("url", "")
@@ -439,7 +628,6 @@ async def _fanart_thumb(session, tmdb_id, mtype, dest, title) -> bool:
                     LOGGER.info("[Thumb] ✅ Fanart: backdrop + logo")
                     return True
 
-            # Background found but no logo worked → text overlay
             if _text_overlay(bg_tmp, dest, title):
                 _rm(bg_tmp)
                 LOGGER.info("[Thumb] ✅ Fanart: backdrop + text")
@@ -449,23 +637,25 @@ async def _fanart_thumb(session, tmdb_id, mtype, dest, title) -> bool:
     # ── Strategy 2: pre-composited moviethumb ────────────────
     for art in precomp[:3]:
         url = art.get("url", "")
-        if not url: continue
+        if not url:
+            continue
         if await _download(session, url, dest) and _ok(dest):
-            # Ensure it's exactly 1280×720
             try:
                 from PIL import Image
                 img = Image.open(dest)
                 if img.size != (_W, _H):
                     img = _landscape_crop(img.convert("RGB"))
-                    _save_jpeg(img, dest)
-            except Exception: pass
+                    _save_jpeg_hq(img, dest)
+            except Exception:
+                pass
             LOGGER.info("[Thumb] ✅ Fanart: moviethumb (pre-composited)")
             return True
 
     # ── Strategy 3: background only + text ───────────────────
     for bg_art in bgs[:3]:
         url = bg_art.get("url", "")
-        if not url: continue
+        if not url:
+            continue
         if await _download(session, url, bg_tmp) and _ok(bg_tmp):
             if _text_overlay(bg_tmp, dest, title):
                 _rm(bg_tmp)
@@ -477,23 +667,79 @@ async def _fanart_thumb(session, tmdb_id, mtype, dest, title) -> bool:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  OMDB — real poster URL
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async def _omdb_thumb(session, title: str, year, dest: str) -> bool:
+    """
+    Fetch the actual movie poster from OMDB (which uses high-res IMDb posters).
+    These are the REAL movie posters with actual logo artwork.
+    """
+    key = getattr(config, "OMDB_API_KEY", "").strip()
+    if not key:
+        return False
+
+    params = {"apikey": key, "t": title, "type": "movie"}
+    if year:
+        params["y"] = year
+
+    data = await _get_json(session, _OMDB, params)
+    poster_url = data.get("Poster", "")
+    if not poster_url or poster_url == "N/A":
+        # Try TV
+        params["type"] = "series"
+        data = await _get_json(session, _OMDB, params)
+        poster_url = data.get("Poster", "")
+
+    if not poster_url or poster_url == "N/A":
+        return False
+
+    # OMDB gives ~300px poster URLs — try to get full size
+    # Pattern: https://m.media-amazon.com/images/M/...._V1_SX300.jpg
+    # Replace SX300 with SX1000 for higher resolution
+    hd_url = re.sub(r"_SX\d+", "_SX1000", poster_url)
+    hd_url = re.sub(r"_SY\d+", "_SY1000", hd_url)
+
+    tmp = dest + ".omdb_tmp.jpg"
+    ok  = await _download_raw(session, hd_url, tmp)
+    if not ok:
+        ok = await _download_raw(session, poster_url, tmp)
+    if not ok or not _ok(tmp):
+        _rm(tmp)
+        return False
+
+    if _poster_to_landscape(tmp, dest, title):
+        _rm(tmp)
+        LOGGER.info("[Thumb] ✅ OMDB: real poster → landscape")
+        return True
+
+    _rm(tmp)
+    return False
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  ITUNES  (portrait poster → landscape)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 async def _itunes_thumb(session, title: str, mtype: str, dest: str) -> bool:
     entity = "movie" if mtype == "movie" else "tvShow"
-    for country in ("in", "us", "gb"):
+    for country in ("us", "in", "gb"):
         data = await _get_json(session, "https://itunes.apple.com/search", {
-            "term": title, "media": "movie" if mtype == "movie" else "tvShow",
-            "entity": entity, "limit": "8", "country": country,
+            "term":    title,
+            "media":   "movie" if mtype == "movie" else "tvShow",
+            "entity":  entity,
+            "limit":   "8",
+            "country": country,
         })
         for item in data.get("results", [])[:8]:
             art = item.get("artworkUrl100") or item.get("artworkUrl60")
-            if not art: continue
+            if not art:
+                continue
+            # Get the highest resolution
             hd  = re.sub(r"/\d+x\d+bb/", "/3000x3000bb/", art)
             tmp = dest + ".it_tmp.jpg"
-            if await _download(session, hd, tmp) and _ok(tmp):
-                ok = _portrait_to_landscape(tmp, dest, title)
+            if await _download_raw(session, hd, tmp) and _ok(tmp):
+                ok = _poster_to_landscape(tmp, dest, title)
                 _rm(tmp)
                 if ok:
                     LOGGER.info("[Thumb] ✅ iTunes → landscape")
@@ -501,90 +747,13 @@ async def _itunes_thumb(session, title: str, mtype: str, dest: str) -> bool:
     return False
 
 
-def _portrait_to_landscape(src: str, out: str, title: str = "") -> bool:
-    """
-    Convert a portrait poster to a cinematic landscape thumbnail.
-    Poster is placed right-of-centre on a blurred+darkened version of itself.
-    """
-    try:
-        from PIL import Image, ImageDraw, ImageFilter
-
-        W, H = _W, _H
-        img  = Image.open(src).convert("RGB")
-        iw, ih = img.size
-
-        # Blurred dark background
-        sc  = max(W / iw, H / ih)
-        bg  = img.resize((int(iw * sc), int(ih * sc)), Image.LANCZOS)
-        bw, bh = bg.size
-        bg  = bg.crop(((bw - W) // 2, (bh - H) // 2,
-                        (bw - W) // 2 + W, (bh - H) // 2 + H))
-        bg  = bg.filter(ImageFilter.GaussianBlur(radius=22))
-        dark = Image.new("RGB", (W, H), (0, 0, 0))
-        canvas = Image.blend(bg, dark, 0.60).convert("RGBA")
-
-        # Poster: right-of-centre, with 20px margin
-        avail_h  = H - 32
-        max_pw   = int(W * 0.48)
-        sc2      = min(max_pw / iw, avail_h / ih)
-        fw, fh   = int(iw * sc2), int(ih * sc2)
-        poster   = img.resize((fw, fh), Image.LANCZOS)
-        px       = W - fw - 20
-        py       = (H - fh) // 2
-
-        # Soft shadow behind poster
-        sh = Image.new("RGBA", (fw + 20, fh + 20), (0, 0, 0, 0))
-        sb = Image.new("RGBA", (fw, fh), (0, 0, 0, 140))
-        sh.paste(sb, (10, 10))
-        sh = sh.filter(ImageFilter.GaussianBlur(radius=12))
-        canvas.alpha_composite(sh, dest=(max(0, px - 8), max(0, py - 8)))
-        canvas.paste(poster, (px, py))
-
-        # Title text bottom-left
-        if title:
-            grad = Image.new("RGBA", (W, 220), (0, 0, 0, 0))
-            gd   = ImageDraw.Draw(grad)
-            for y in range(220):
-                alpha = int(230 * (y / 219) ** 1.3)
-                gd.line([(0, y), (W, y)], fill=(0, 0, 0, alpha))
-            canvas.alpha_composite(grad, dest=(0, H - 220))
-
-            draw  = ImageDraw.Draw(canvas)
-            font  = _font(_BOLD, 58)
-            words = title.upper().split()
-            lines, cur = [], ""
-            max_tw = px - 30
-            for w in words:
-                test = f"{cur} {w}".strip()
-                try: tw = draw.textbbox((0, 0), test, font=font)[2]
-                except Exception: tw = len(test) * 28
-                if tw <= max_tw: cur = test
-                else:
-                    if cur: lines.append(cur)
-                    cur = w
-            if cur: lines.append(cur)
-            lh = 66
-            ty = H - 36 - len(lines) * lh
-            for line in lines:
-                try: lw2 = draw.textbbox((0, 0), line, font=font)[2]
-                except Exception: lw2 = len(line) * 29
-                lx = 46
-                draw.text((lx + 2, ty + 2), line, font=font, fill=(0, 0, 0, 200))
-                draw.text((lx, ty),         line, font=font, fill=(255, 255, 255, 255))
-                ty += lh
-
-        return _save_jpeg(canvas.convert("RGB"), out)
-    except Exception as e:
-        LOGGER.debug(f"_portrait_to_landscape: {e}")
-        return False
-
-
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  FFMPEG FRAME
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 async def _ffmpeg_frame(video: str, dest: str) -> bool:
-    if not video or not os.path.exists(video): return False
+    if not video or not os.path.exists(video):
+        return False
     try:
         from asyncio import create_subprocess_exec
         from asyncio.subprocess import PIPE
@@ -595,7 +764,8 @@ async def _ffmpeg_frame(video: str, dest: str) -> bool:
         )
         out, _ = await pr.communicate()
         dur = float(out.decode().strip() or "0")
-    except Exception: dur = 0
+    except Exception:
+        dur = 0
 
     seek = max(dur * 0.30, 3.0) if dur > 10 else 1.0
     cmd  = [
@@ -632,12 +802,12 @@ def generate_title_card(title: str, dest: str, year: str = "", genre: str = "") 
         canvas = Image.new("RGBA", (W, H))
         draw   = ImageDraw.Draw(canvas)
 
-        # Deep navy gradient
+        # Deep cinematic gradient
         for y in range(H):
             t = y / H
             draw.line([(0, y), (W, y)],
-                      fill=(int(8 + (2 - 8) * t), int(15 + (5 - 15) * t),
-                            int(35 + (12 - 35) * t), 255))
+                      fill=(int(6 + (2 - 6) * t), int(12 + (4 - 12) * t),
+                            int(32 + (10 - 32) * t), 255))
 
         # Film grain
         for _ in range(14000):
@@ -647,51 +817,61 @@ def generate_title_card(title: str, dest: str, year: str = "", genre: str = "") 
 
         # Gold accent lines
         acc = (210, 160, 30)
-        for yp in [H // 2 - 92, H // 2 + 92]:
+        for yp in [H // 2 - 96, H // 2 + 96]:
             draw.line([(100, yp), (W - 100, yp)], fill=(*acc, 145), width=1)
 
         # Corner marks
-        for cx, cy, dx, dy in [(72,72,1,1),(W-72,72,-1,1),(72,H-72,1,-1),(W-72,H-72,-1,-1)]:
-            draw.line([(cx,cy),(cx+dx*38,cy)], fill=(*acc,150), width=2)
-            draw.line([(cx,cy),(cx,cy+dy*38)], fill=(*acc,150), width=2)
+        for cx, cy, dx, dy in [(72, 72, 1, 1), (W-72, 72, -1, 1),
+                                (72, H-72, 1, -1), (W-72, H-72, -1, -1)]:
+            draw.line([(cx, cy), (cx+dx*40, cy)], fill=(*acc, 150), width=2)
+            draw.line([(cx, cy), (cx, cy+dy*40)], fill=(*acc, 150), width=2)
 
         # Watermark
         wm = getattr(config, "WATERMARK", "NXT HUB")
-        draw.text((80, 52), f"⚡ {wm}", font=_font(_BOLD, 20), fill=(210, 160, 30, 200))
+        draw.text((82, 54), f"⚡ {wm}", font=_font(_BOLD, 20), fill=(210, 160, 30, 200))
 
         # Title
-        tfont = _font(_BOLD, 72)
+        tfont = _font(_BOLD, 76)
         words = title.upper().split()
         lines, cur = [], ""
         for w in words:
             test = f"{cur} {w}".strip()
-            try: tw = draw.textbbox((0,0), test, font=tfont)[2]
-            except Exception: tw = len(test) * 34
-            if tw <= W - 160: cur = test
+            try:
+                tw = draw.textbbox((0, 0), test, font=tfont)[2]
+            except Exception:
+                tw = len(test) * 36
+            if tw <= W - 160:
+                cur = test
             else:
-                if cur: lines.append(cur)
+                if cur:
+                    lines.append(cur)
                 cur = w
-        if cur: lines.append(cur)
+        if cur:
+            lines.append(cur)
 
-        lh = 84
+        lh = 88
         ty = (H - len(lines) * lh) // 2 - 20
         for line in lines:
-            try: lw = draw.textbbox((0,0), line, font=tfont)[2]
-            except Exception: lw = len(line) * 35
+            try:
+                lw = draw.textbbox((0, 0), line, font=tfont)[2]
+            except Exception:
+                lw = len(line) * 38
             lx = (W - lw) // 2
-            for off, al in [(4,50),(2,90),(1,125)]:
-                draw.text((lx+off, ty+off), line, font=tfont, fill=(30,60,120,al))
+            for off, al in [(4, 50), (2, 90), (1, 125)]:
+                draw.text((lx+off, ty+off), line, font=tfont, fill=(30, 60, 120, al))
             draw.text((lx, ty), line, font=tfont, fill=(255, 255, 255, 255))
             ty += lh
 
         sub = "  ·  ".join(p for p in [year, genre] if p)
         if sub:
             sf  = _font(_REG, 28)
-            try: sw = draw.textbbox((0,0), sub, font=sf)[2]
-            except Exception: sw = len(sub) * 14
-            draw.text(((W-sw)//2, ty+8), sub, font=sf, fill=(175, 175, 195, 200))
+            try:
+                sw = draw.textbbox((0, 0), sub, font=sf)[2]
+            except Exception:
+                sw = len(sub) * 14
+            draw.text(((W-sw)//2, ty+10), sub, font=sf, fill=(175, 175, 195, 200))
 
-        return _save_jpeg(canvas.convert("RGB"), dest)
+        return _save_jpeg_hq(canvas.convert("RGB"), dest)
     except Exception as e:
         LOGGER.error(f"generate_title_card: {e}")
         return False
@@ -707,7 +887,7 @@ def _guess_title(filename: str) -> str:
     name = re.sub(
         r"\b(1080p|720p|480p|4K|2160p|BluRay|BDRip|WEB.?DL|WEBRip|HDTV"
         r"|x264|x265|HEVC|AAC|DD5\.1|Dual|Audio|Hindi|Tamil|Telugu|English"
-        r"|Multi|S\d{2}E\d{2}|S\d{2}|E\d{2})\b.*",
+        r"|Multi|S\d{2}E\d{2}|S\d{2}|E\d{2})\\b.*",
         "", name, flags=re.I,
     ).strip()
     return name or "Untitled"
@@ -721,8 +901,20 @@ async def get_thumbnail(
     video_path: str | None = None,
 ) -> bool:
     """
-    Fetch or generate a 1280×720 landscape thumbnail with actual movie logo.
-    Always returns True — generate_title_card() is the final guaranteed fallback.
+    Fetch or generate a 1280×720 landscape thumbnail with actual movie artwork.
+
+    Priority:
+      1. Fanart.tv: real logo PNG + backdrop composite
+      2. TMDB: backdrop + logo PNG composite
+      3. TMDB: actual movie poster → cinematic landscape (REAL poster art!)
+      4. OMDB: real IMDb poster → cinematic landscape
+      5. Fanart: pre-composited moviethumb
+      6. iTunes portrait poster → landscape
+      7. ffmpeg video frame
+      8. Title card (always succeeds)
+
+    All thumbnails saved at HIGH QUALITY (up to 5 MB) for cover= parameter.
+    thumb= parameter uses prep_for_upload() to compress to 200 KB / 320×320.
     """
     label = title_overlay or title
     os.makedirs(os.path.dirname(os.path.abspath(dest)), exist_ok=True)
@@ -731,8 +923,11 @@ async def get_thumbnail(
     cached = _cache_get(title, year)
     if cached:
         try:
-            import shutil; shutil.copy2(cached, dest); return True
-        except Exception: pass
+            import shutil
+            shutil.copy2(cached, dest)
+            return True
+        except Exception:
+            pass
 
     LOGGER.info(f"[Thumb] Fetching: '{title}' ({year})")
 
@@ -742,27 +937,37 @@ async def get_thumbnail(
         if tmdb_id:
             LOGGER.info(f"[Thumb] TMDB match: id={tmdb_id} type={mtype}")
 
-            # 1. Fanart: backdrop + logo (best quality)
+            # 1. Fanart: real logo + backdrop (highest quality)
             if await _fanart_thumb(s, tmdb_id, mtype, dest, label):
                 if _ok(dest):
-                    _cache_put(title, year, dest); return True
+                    _cache_put(title, year, dest)
+                    return True
 
-            # 2. TMDB: backdrop + logo
+            # 2 & 3. TMDB: backdrop+logo OR actual movie poster → landscape
             if await _tmdb_thumb(s, tmdb_id, mtype, dest, label):
                 if _ok(dest):
-                    _cache_put(title, year, dest); return True
+                    _cache_put(title, year, dest)
+                    return True
 
-        # 3. iTunes portrait → landscape
+        # 4. OMDB: real IMDb poster → cinematic landscape
+        if await _omdb_thumb(s, title, year, dest):
+            if _ok(dest):
+                _cache_put(title, year, dest)
+                return True
+
+        # 5. iTunes portrait → landscape
         mt = mtype if tmdb_id else "movie"
         if await _itunes_thumb(s, title, mt, dest):
             if _ok(dest):
-                _cache_put(title, year, dest); return True
+                _cache_put(title, year, dest)
+                return True
 
-    # 4. ffmpeg frame
+    # 6. ffmpeg frame
     if video_path and await _ffmpeg_frame(video_path, dest):
-        if _ok(dest): return True
+        if _ok(dest):
+            return True
 
-    # 5. Title card (always succeeds)
+    # 7. Title card (always succeeds)
     generate_title_card(label, dest, year or "")
     return True
 
@@ -774,16 +979,21 @@ async def generate_hd_thumb(
 ) -> str | None:
     """
     Main entry point for the uploader.
-    Returns path to a 1280×720 JPEG thumbnail, always.
+    Returns path to a 1280×720 HIGH QUALITY JPEG thumbnail, always.
+
+    The returned image is used for BOTH:
+      - cover= parameter (sent as-is, high quality)
+      - thumb= parameter (compressed to 320×320 / 200 KB via prep_for_upload)
 
     Priority:
       1. Explicit custom_thumb passed by caller
       2. User's saved custom thumbnail (from /settings)
-      3. Fanart.tv backdrop + logo  ← best quality
-      4. TMDB backdrop + logo
-      5. iTunes portrait → landscape
-      6. ffmpeg frame
-      7. Title card (always succeeds)
+      3. Fanart.tv: real logo + backdrop
+      4. TMDB: backdrop+logo OR actual movie poster
+      5. OMDB: real IMDb poster
+      6. iTunes portrait
+      7. ffmpeg frame
+      8. Title card (always succeeds)
     """
     from bot.utils.thumb_store import TMP_DIR as tmp
     os.makedirs(tmp, exist_ok=True)
@@ -794,7 +1004,7 @@ async def generate_hd_thumb(
         try:
             from PIL import Image
             img = _landscape_crop(Image.open(custom_thumb).convert("RGB"))
-            _save_jpeg(img, dest)
+            _save_jpeg_hq(img, dest)
             return dest
         except Exception:
             pass
@@ -809,13 +1019,12 @@ async def generate_hd_thumb(
                 dest = os.path.join(tmp, f"usr_{uid}_{int(time.time())}.jpg")
                 from PIL import Image
                 img = _landscape_crop(Image.open(tp).convert("RGB"))
-                _save_jpeg(img, dest)
+                _save_jpeg_hq(img, dest)
                 return dest
         except Exception:
             pass
 
-    # 3–7. Auto-fetch: use the SAME parse_title_year as the rest of the bot
-    #       (it now strips language tags, site prefixes, dangling punctuation)
+    # 3–8. Auto-fetch from APIs
     title = _guess_title(file_path)
     year  = None
     try:
@@ -831,7 +1040,7 @@ async def generate_hd_thumb(
     return dest if os.path.exists(dest) else None
 
 
-# prep_thumb is imported from thumb_store — kept here for any direct callers
+# prep_thumb is imported from thumb_store
 def prep_thumb(src: str, dest: str | None = None) -> str | None:
     from bot.utils.thumb_store import prep_for_upload
     return prep_for_upload(src, dest)
