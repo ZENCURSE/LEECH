@@ -598,9 +598,15 @@ async def encode(
         stderr=asyncio.subprocess.PIPE,   # errors only
     )
 
-    # Drain stderr (errors) + read progress from stdout concurrently
+    # Drain stderr (errors) + read progress from stdout concurrently.
+    # IMPORTANT: don't use proc.communicate() here — it reads stdout
+    # internally too, which would race with handle_progress()'s own
+    # read of proc.stdout and silently starve the progress bar.
     async def _drain_stderr():
-        _, err = await proc.communicate()
+        chunks = []
+        async for line in proc.stderr:
+            chunks.append(line)
+        err = b"".join(chunks)
         if err:
             decoded = err.decode(errors="replace").strip()
             if decoded:
@@ -613,6 +619,9 @@ async def encode(
         ),
         _drain_stderr(),
     )
+    returncode = await proc.wait()
+    if returncode != 0:
+        LOGGER.error(f"[Encode] ffmpeg exited with code {returncode}")
 
     # ── Validate output ───────────────────────────────────────
     if not os.path.isfile(output) or os.path.getsize(output) == 0:
