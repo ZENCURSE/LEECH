@@ -40,11 +40,6 @@ async def enc_callback(client: Client, cb: CallbackQuery):
         await cb.answer("Label button — use buttons below it.", show_alert=True)
         return
 
-    elif data == "triggerMode":
-        v = await db.get_drive(uid)
-        await db.set_drive(uid, not v)
-        await ExtraSettings(cb.message, user_id=uid)
-
     elif data == "triggerUploadMode":
         v = await db.get_upload_as_doc(uid)
         await db.set_upload_as_doc(uid, not v)

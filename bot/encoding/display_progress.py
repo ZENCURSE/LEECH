@@ -1,10 +1,9 @@
 
 
-import asyncio
 import math
 import time
 
-PROGRESS = True  # Enable progress updates
+PROGRESS = "\n📦 {} / {}\n⚡ {}\n⏳ ETA: {}"  # template used below via .format()
 
 
 async def progress_for_pyrogram(current, total, ud_type, message, start):

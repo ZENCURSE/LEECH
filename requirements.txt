@@ -1,7 +1,6 @@
 # ── Telegram ──────────────────────────────────────────────────
-pyrofork
-TgCrypto
 pyroblack
+TgCrypto
 aiogram==3.18.0          # PM bot with cover= support for HD video poster
 
 # ── Download ──────────────────────────────────────────────────

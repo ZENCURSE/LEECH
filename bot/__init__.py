@@ -27,6 +27,7 @@ app = Client(
     bot_token=config.BOT_TOKEN,
     plugins={"root": "bot/handlers"},
     sleep_threshold=10,
+    max_concurrent_transmissions=16,
 )
 
 # User client for 4 GB uploads (optional)
@@ -37,6 +38,7 @@ if config.SESSION:
         api_id=config.API_ID,
         api_hash=config.API_HASH,
         session_string=config.SESSION,
+        max_concurrent_transmissions=16,
     )
 
 

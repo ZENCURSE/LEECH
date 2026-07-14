@@ -7,7 +7,6 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 import logging; LOGGER = logging.getLogger("encoding")
 from bot.encoding.db import enc_db as db
-from bot.encoding.db import enc_db as db
 
 
 # Settings
@@ -277,8 +276,7 @@ async def ExtraSettings(event: Message, user_id: int):
                     [InlineKeyboardButton(f"Hardsub {'☑️' if ((await db.get_hardsub(user_id)) is True) else ''}", callback_data="triggerHardsub"), InlineKeyboardButton(f"Copy {'☑️' if ((await db.get_subtitles(user_id)) is True) else ''}", callback_data="triggerSubtitles")],
                     [InlineKeyboardButton(
                         f"Upload Settings", callback_data="Watermark")],
-                    [InlineKeyboardButton(f"{'G-Drive' if ((await db.get_drive(user_id)) is True) else 'Telegram'}", callback_data="triggerMode"),
-                     InlineKeyboardButton(f"{'Document' if ((await db.get_upload_as_doc(user_id)) is True) else 'Video'}", callback_data="triggerUploadMode")],
+                    [InlineKeyboardButton(f"{'Document' if ((await db.get_upload_as_doc(user_id)) is True) else 'Video'}", callback_data="triggerUploadMode")],
                     [InlineKeyboardButton(
                         f"Watermark Settings", callback_data="Watermark")],
                     [InlineKeyboardButton(f"Metadata {'☑️' if ((await db.get_metadata_w(user_id)) is True) else ''}", callback_data="triggerMetadata"), InlineKeyboardButton(f"Video {'☑️' if ((await db.get_watermark(user_id)) is True) else ''}", callback_data="triggerVideo")],

@@ -20,7 +20,6 @@ _DEFAULTS = dict(
     bitrate="source",
     bits=False,
     channels="source",
-    drive=False,
     preset="s",       # slow — better compression, avoids file size inflation
     metadata=True,
     hardsub=False,
@@ -94,8 +93,6 @@ class EncDB:
     async def get_channels(self, uid):    return (await self._get(uid)).get("channels", "source")
     async def set_channels(self, uid, v): await self._set(uid, channels=v)
 
-    async def get_drive(self, uid):       return (await self._get(uid)).get("drive", False)
-    async def set_drive(self, uid, v):    await self._set(uid, drive=v)
 
     async def get_preset(self, uid):      return (await self._get(uid)).get("preset", "s")
     async def set_preset(self, uid, v):   await self._set(uid, preset=v)
