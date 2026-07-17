@@ -429,19 +429,24 @@ def _upsert_group_msg(uid: int, msg: Message):
 
 
 async def _send_or_update_status_card(uid: int, origin_msg: Message):
-    """Send or update the global status card. Always called when task added."""
+    """
+    Called every time a NEW task is added. Deletes the old status card (if any)
+    and posts a fresh one, so the status always reappears at the bottom of the
+    chat next to the new task instead of staying stuck up where it first sent.
+    """
     from bot.utils.progress import status_message
     from bot.handlers.status import _status_kb
     tasks = {tid: d for tid, d in tm.all_tasks().items() if d["user_id"] == uid}
     text  = status_message(tasks)
     kb    = _status_kb(uid)
-    existing = _status_msgs.get(uid)
+
+    existing = _status_msgs.pop(uid, None)
     if existing:
         try:
-            await existing.edit_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=kb)
-            return
+            await existing.delete()
         except Exception:
             pass
+
     try:
         msg = await origin_msg.reply_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=kb)
         _status_msgs[uid] = msg
