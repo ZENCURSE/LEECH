@@ -12,7 +12,7 @@ SESSION          = ""           # Pyrogram session string — leave blank for 2 
                                 # Fill with Premium account session for 4 GB uploads
 OWNER_ID         = 5417874390
 LOG_CHANNEL      = -1002329590802
-AUTHORIZED_CHATS = [-1003882018027,-1003876799341]           # e.g. [123456789, -1001234567890]
+AUTHORIZED_CHATS = [-1003882018027,-1003876799341,-1003312545501]           # e.g. [123456789, -1001234567890]
 
 
 # ── MongoDB ───────────────────────────────────────────────────
