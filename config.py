@@ -58,8 +58,6 @@ ARIA2_SECRET = "nxt_hub"              # Leave blank or set a secret token
 WATERMARK = "@NXT_HUB"
 
 # ── Encoding (FFmpeg) ─────────────────────────────────────────
-ENCODE_DIR      = "/downloads_enc"   # Where encoded files are written
-WATERMARK_FILE  = "bot/encoding/extras/watermark.ass"  # ASS watermark overlay
 
 # ── Dump Channel ───────────────────────────────────────────────
 # Set this to a channel/group ID (negative int) to have the bot

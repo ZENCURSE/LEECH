@@ -35,7 +35,6 @@ def _main_settings_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton("📤 Upload",     callback_data="stg_sec:upload"),
         ],
         [
-            InlineKeyboardButton("🎬 Encoding",   callback_data="stg_sec:encoding"),
             InlineKeyboardButton("🏷 Rename",     callback_data="stg_sec:rename"),
         ],
         [
@@ -84,22 +83,6 @@ async def _overview_text(uid: int) -> str:
     rr  = f"<code>{s.get('rename_regex','')[:30]}</code>" if s.get("rename_regex") else "—"
     cap = f"<code>{s.get('caption','')[:30]}</code>" if s.get("caption") else "—"
 
-    # Encoding
-    enc_line = "—"
-    try:
-        from bot.encoding.db import enc_db
-        codec  = "H.265" if await enc_db.get_hevc(uid) else "H.264"
-        crf    = await enc_db.get_crf(uid)
-        preset = await enc_db.get_preset(uid) or "sf"
-        res    = await enc_db.get_resolution(uid) or "OG"
-        res_str = "Source" if res == "OG" else f"{res}p"
-        audio  = (await enc_db.get_audio(uid) or "aac").upper()
-        hs     = _tick(await enc_db.get_hardsub(uid))
-        wm     = _tick(await enc_db.get_watermark(uid))
-        enc_line = f"{codec}  CRF {crf}  {preset}  {res_str}  {audio}  Hardsub {hs}  WM {wm}"
-    except Exception:
-        pass
-
     return (
         "📋 <b>Settings Overview</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -108,8 +91,6 @@ async def _overview_text(uid: int) -> str:
         f"📤 <b>Upload</b>\n"
         f"   Mode: {md}  ·  Thumbnail: {th}\n"
         f"   Dump channel: {dc}\n\n"
-        f"🎬 <b>Encoding</b>\n"
-        f"   {enc_line}\n\n"
         f"🏷 <b>Rename</b>\n"
         f"   Prefix: {px}\n"
         f"   Suffix: {sx}\n"
@@ -189,39 +170,6 @@ def _upload_text(uid: int) -> str:
         f"📢 <b>Dump channel:</b> {dc}\n\n"
         "<i>Send photo or image file for thumbnail.\n"
         "File upload preserves full quality.</i>"
-    )
-
-
-# ══════════════════════════════════════════════════════════════
-#  SECTION: ENCODING
-# ══════════════════════════════════════════════════════════════
-
-def _encoding_kb(uid: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("⚙️ Open Encode Panel",   callback_data="stg_enc_open"),
-            InlineKeyboardButton("👁 View Settings",        callback_data="stg_enc_view"),
-        ],
-        [
-            InlineKeyboardButton("🔄 Reset to Defaults",   callback_data="stg_enc_reset"),
-        ],
-        [InlineKeyboardButton("⬅️ Back", callback_data="stg_main")],
-    ])
-
-def _encoding_text() -> str:
-    return (
-        "🎬 <b>Encoding Settings</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Configure your FFmpeg encoding profile.\n\n"
-        "  <b>Codec</b>     H.264 or H.265\n"
-        "  <b>CRF</b>       Quality (lower = better)\n"
-        "  <b>Preset</b>    Speed vs compression\n"
-        "  <b>Resolution</b> Source or target height\n"
-        "  <b>FPS</b>       Framerate cap\n"
-        "  <b>Audio</b>     Codec + bitrate + channels\n"
-        "  <b>Hardsub</b>   Burn subtitles in\n"
-        "  <b>Watermark</b> Overlay image\n\n"
-        "<i>Use /vset to view settings as plain text.</i>"
     )
 
 
@@ -320,65 +268,9 @@ async def settings_cb(client: Client, cb: CallbackQuery):
         await _safe_edit(cb, _upload_text(uid), _upload_kb(uid))
         return await cb.answer()
 
-    if data == "stg_sec:encoding":
-        await _safe_edit(cb, _encoding_text(), _encoding_kb(uid))
-        return await cb.answer()
-
     if data == "stg_sec:rename":
         await _safe_edit(cb, _rename_text(uid), _rename_kb(uid))
         return await cb.answer()
-
-    # ── Encoding sub-actions ────────────────────────────────────
-    if data == "stg_enc_open":
-        try:
-            from bot.encoding.settings_utils import OpenSettings
-            from bot.encoding.db import enc_db
-            await enc_db.add_user(uid)
-            await OpenSettings(cb.message, user_id=uid)
-        except Exception as e:
-            await cb.answer(f"Error: {e}", show_alert=True)
-        return
-
-    if data == "stg_enc_view":
-        try:
-            from bot.encoding.db import enc_db
-            codec  = "H.265" if await enc_db.get_hevc(uid) else "H.264"
-            crf    = await enc_db.get_crf(uid)
-            preset = await enc_db.get_preset(uid) or "sf"
-            res    = await enc_db.get_resolution(uid) or "OG"
-            res_str= "Source" if res == "OG" else f"{res}p"
-            audio  = (await enc_db.get_audio(uid) or "aac").upper()
-            ext    = await enc_db.get_extensions(uid) or "MKV"
-            hs     = _tick(await enc_db.get_hardsub(uid))
-            ss     = _tick(await enc_db.get_subtitles(uid))
-            wm     = _tick(await enc_db.get_watermark(uid))
-            text = (
-                "🎬 <b>Current Encode Settings</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"Codec:     <code>{codec}</code>\n"
-                f"CRF:       <code>{crf}</code>\n"
-                f"Preset:    <code>{preset}</code>\n"
-                f"Res:       <code>{res_str}</code>\n"
-                f"Audio:     <code>{audio}</code>\n"
-                f"Container: <code>{ext}</code>\n\n"
-                f"Hardsub:   {hs}   Softsub: {ss}   Watermark: {wm}"
-            )
-            await cb.answer()
-            await cb.message.reply_text(text, parse_mode=enums.ParseMode.HTML)
-        except Exception as e:
-            await cb.answer(f"Error: {e}", show_alert=True)
-        return
-
-    if data == "stg_enc_reset":
-        try:
-            from bot.encoding.db import enc_db
-            await enc_db.delete_user(uid)
-            await enc_db.add_user(uid)
-            await cb.answer("✅ Encoding settings reset to defaults.")
-            await _safe_edit(cb, _encoding_text(), _encoding_kb(uid))
-        except Exception as e:
-            await cb.answer(f"Error: {e}", show_alert=True)
-        return
 
     # ── Reset all — confirmation step ───────────────────────────
     if data == "stg_reset_confirm":

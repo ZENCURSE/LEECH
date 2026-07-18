@@ -28,10 +28,9 @@ def _welcome(user) -> str:
         f"🚀 <b>NXT HUB LEECH BOT</b>  <code>v5</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"  📥  Download from <b>1000+</b> sites\n"
-        f"  🎬  FFmpeg encode — H.264/H.265, CRF, subs\n"
         f"  🧲  Torrent &amp; magnet via aria2\n"
         f"  ✂️   Auto-split files up to <b>4 GB</b>\n"
-        f"  🖼   HD thumbnails — TMDB · Fanart · iTunes\n"
+        f"  🖼   Auto HD thumbnail card on every leech\n"
         f"  🏷   Smart rename with token variables\n"
         f"  📢  Dump channel forwarding\n\n"
         f"{task_hint}"
@@ -69,21 +68,9 @@ HELP_TEXT = (
 
     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
-    "🎬 <b>Encoding</b>\n"
-    "<code>/encode</code>       — reply to video to encode\n"
-    "<code>/encurl &lt;url&gt;</code> — download + encode URL\n"
-    "<code>/encsub</code>       — hardsub a video\n"
-    "<code>/encset</code>       — open encode settings panel\n"
-    "<code>/vset</code>         — view current encode settings\n\n"
-    "<b>Options:</b> H.264/H.265 · CRF · Preset · FPS\n"
-    "Resolution · Audio codec · Hardsub · Watermark\n\n"
-
-    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-
     "⚙️ <b>Settings</b>  <code>/settings</code>\n"
     "  📥 Cookies — yt-dlp premium access\n"
     "  📤 Thumbnail · Upload mode · Dump channel\n"
-    "  🎬 Full FFmpeg encode panel\n"
     "  🏷 Prefix · Suffix · Regex · Caption\n\n"
     "<b>Caption tokens:</b>  "
     "<code>{name}</code> <code>{size}</code> <code>{quality}</code> "

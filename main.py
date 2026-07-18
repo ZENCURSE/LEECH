@@ -1,6 +1,5 @@
 """
 NXT_HUB Leech Bot — Entry Point
-Integrated with ENCODING-BOT for FFmpeg encode support.
 """
 import os
 import asyncio
@@ -93,11 +92,6 @@ async def main():
             BotCommand("jdleech",  "🔗 JD-style multi-host download"),
             BotCommand("status",   "📊 View your active tasks"),
             BotCommand("cancel",   "🚫 Cancel a task"),
-            BotCommand("encode",   "🎬 Encode a video (reply to file)"),
-            BotCommand("encurl",   "🎬 Download & encode a URL"),
-            BotCommand("encsub",   "📄 Encode video + external subtitle (hardsub)"),
-            BotCommand("encset",   "⚙️ Configure encoding settings"),
-            BotCommand("vset",     "👁 View current encode settings"),
             BotCommand("settings", "⚙️ Personal leech settings"),
             BotCommand("help",     "📖 Full command reference"),
             BotCommand("about",    "ℹ️ About this bot"),

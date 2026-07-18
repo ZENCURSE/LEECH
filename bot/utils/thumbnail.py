@@ -1078,12 +1078,10 @@ async def generate_hd_thumb(
     Priority:
       1. Explicit custom_thumb passed by caller
       2. User's saved custom thumbnail (from /settings)
-      3. Fanart.tv: real logo + backdrop (actual movie artwork)
-      4. TMDB: backdrop+logo OR actual movie poster → landscape
-      5. OMDB: real IMDb poster → landscape
-      6. iTunes portrait poster → landscape
-      7. ffmpeg video frame
-      8. None — NO fake/custom title card is generated
+      3. Video: "Magic Thumbnail" card built from the video's own extracted
+         frame + real ffprobe metadata (title/quality/size/duration/codec)
+      4. Non-video (audio etc.): Fanart/TMDB/OMDB/iTunes/ffmpeg-frame chain
+      5. None — NO fake/custom title card is generated
     """
     from bot.utils.thumb_store import TMP_DIR as tmp
     os.makedirs(tmp, exist_ok=True)
@@ -1114,17 +1112,36 @@ async def generate_hd_thumb(
         except Exception:
             pass
 
-    # 3–8. Auto-fetch from APIs
     title = _guess_title(file_path)
-    year  = None
     try:
         from bot.utils.rename import parse_title_year
         t, year = parse_title_year(file_path)
         if t and t != "Untitled":
             title = t
     except Exception:
-        pass
+        year = None
 
+    # 3. Video → Magic Thumbnail card from the video's own frame
+    try:
+        from bot.utils.media_utils import get_document_type
+        is_video, _is_audio, _is_image = await get_document_type(file_path)
+    except Exception:
+        is_video = False
+
+    if is_video:
+        try:
+            from bot.utils.magic_card import generate_leech_magic_thumb
+            custom_channel = ""
+            if uid:
+                from bot.database import users_db
+                custom_channel = users_db.get_settings(uid).get("custom_channel", "")
+            dest = os.path.join(tmp, f"magic_{int(time.time())}.jpg")
+            if await generate_leech_magic_thumb(file_path, dest, title, custom_channel):
+                return dest
+        except Exception:
+            LOGGER.debug("generate_hd_thumb: magic card generation failed", exc_info=True)
+
+    # 4. Non-video fallback — Fanart/TMDB/OMDB/iTunes/ffmpeg-frame chain
     dest = os.path.join(tmp, f"auto_{int(time.time())}.jpg")
     await get_thumbnail(title, year, dest, title_overlay=title, video_path=file_path)
     return dest if os.path.exists(dest) else None
