@@ -38,6 +38,23 @@ _SITE_TLD_RE = re.compile(
     r"[\s.\-_\[\])]*"
 )
 
+# ── Split point: where the "title" ends and the tags/quality info begins ──
+# Everything BEFORE the first match of this is treated as pure title text
+# and is never touched beyond separator→space conversion. Everything from
+# here onward is the "tags zone", where site-name/tech-tag stripping runs.
+# This is what keeps things like "Chand.Mera.Dil" or "23000" intact — the
+# aggressive regexes below never even see the title portion of the name.
+_SPLIT_RE = re.compile(
+    r"(?i)\b("
+    r"(?:19|20)\d{2}"                                        # year
+    r"|480p|576p|720p|1080p|1080i|2160p|4k|8k|uhd"           # resolution
+    r"|bluray|blu-ray|bdrip|web-?dl|webrip|hdtv|hdrip|hdtc|hdcam|dvdrip|dvdscr"  # source
+    r"|s\d{1,2}[.\-]?e\d{1,2}(?:[.\-]?e\d{1,2})*"            # S01E01
+    r"|s\d{1,2}(?![\d.]\d)"                                   # standalone S01
+    r"|\d{1,2}x\d{2}"                                         # 1x01
+    r")\b"
+)
+
 # ── Season/Episode patterns — protect these ───────────────────
 # Matches: S01E01, S01E01E02, S01, E01, 1x01
 _SE_RE = re.compile(
@@ -118,84 +135,125 @@ def _normalise_tags(text: str) -> str:
     return pattern.sub(_replace, text)
 
 
+def _strip_leading_site(text: str) -> str:
+    """Strip a website name/domain/bracket tag ONLY if it's the very first
+    thing in the string — e.g. '[TamilMV] Movie...', 'www.site.com - Movie',
+    'ExtraFlix Movie...'. Never touches a site-shaped word anywhere else,
+    which is what used to eat real title words/numbers that merely
+    contained a matching substring."""
+    prev = None
+    while text != prev:
+        prev = text
+        # bracket/paren tag at the very start: "[TamilMV] ", "(site.com) "
+        text = re.sub(r"^\s*[\[\(][^\]\)]{1,40}[\]\)]\s*[-–—:]?\s*", "", text)
+        # domain at the very start: "www.site.com ", "site.com - "
+        text = re.sub(
+            r"(?i)^\s*(www\.)?[a-z0-9]+\.(com|net|org|in|io|co|me|tv|mobi|site|"
+            r"xyz|club|info|cc|vc|pw|ws|to|li|re|nl)(?![a-z0-9])\s*[-–—:]?\s*",
+            "", text,
+        )
+        # known piracy site name as the very first word
+        text = re.sub(
+            r"(?i)^\s*(" + "|".join(re.escape(s) for s in _SITES) + r")"
+            r"(?![a-z0-9])\s*[-–—:]?\s*",
+            "", text,
+        )
+    return text
+
+
 def clean_name(name: str) -> str:
     """
-    Sanitise a media filename:
-      - Removes piracy site watermarks and domain tags
-      - Strips junk codec/release flags (dvdrip, xvid, repack, dubbed …)
-      - KEEPS quality tags: resolution, codec, source, audio format
-      - Preserves season/episode markers (S01E01, 1x01 …)
-      - Normalises tech tag casing (bluray → BluRay, webdl → WEB-DL …)
-      - Replaces separators with spaces
+    Sanitise a media filename with a strict split between the free-text
+    TITLE and the TAGS (quality/source/codec/audio) that follow it:
+
+      - TITLE (everything before the year/resolution/source/SxxExx marker):
+        left completely as written — the only change is converting
+        separators (. _ - etc.) to spaces. A website name is stripped from
+        here ONLY if it's a leading prefix (e.g. "[TamilMV] Movie...",
+        "www.site.com - Movie..."); a site-shaped word anywhere else in
+        the title is never touched, so real title words/numbers can't be
+        collaterally eaten (this is what used to turn "Chand.Mera.Dil"
+        into "ra Dil", or eat numbers like "23000").
+      - TAGS (from that marker onward): site watermarks, tech-junk flags
+        (dvdrip, xvid, dubbed …) and trailing release-group tags are
+        stripped here, same as before; resolution/codec/source/audio are
+        kept and casing-normalised (bluray → BluRay, webdl → WEB-DL …).
 
     Examples
     --------
     Interstellar.2014.1080p.BluRay.x264-moviesmod.mkv
       → Interstellar 2014 1080p BluRay x264.mkv
 
-    KGF.Chapter.2.2022.Hindi.1080p.WEBRip.hdhub4u.com.mkv
-      → KGF Chapter 2 2022 Hindi 1080p WEBRip.mkv
+    Chand.Mera.Dil.2026.720p.WEB-DL.Hindi.AAC2.0.H.265-ExtraFlix.Pw.mkv
+      → Chand Mera Dil 2026 720p WEB-DL Hindi AAC2.0 H.265.mkv
 
     The.Boys.S03E01.1080p.WEB-DL.x265.AAC5.1.mkv
       → The Boys S03E01 1080p WEB-DL x265 AAC5.1.mkv
-
-    Avengers.2019.2160p.4K.UHD.BluRay.HEVC.10bit.AAC5.1-YIFY.mkv
-      → Avengers 2019 2160p 4K UHD BluRay HEVC 10bit AAC5.1.mkv
     """
     stem, ext = os.path.splitext(name)
 
+    m = _SPLIT_RE.search(stem)
+    title_part = stem[: m.start()] if m else stem
+    tags_part  = stem[m.start():] if m else ""
+
+    # ── TITLE: strip a leading site tag only, then just de-separator it ──
+    title_part = _strip_leading_site(title_part)
+    title_part = _SEP_RE.sub(" ", title_part)
+    title_part = re.sub(r"(?<!\w)-(?!\w)|(?<=\s)-|-(?=\s)", " ", title_part)
+    title_part = re.sub(r"\s+", " ", title_part).strip()
+
+    # ── TAGS: same stripping pipeline as before, scoped to this zone only ─
     # 1. Protect season/episode tokens
     _se_map: dict[str, str] = {}
-    def _protect_se(m: re.Match) -> str:
+    def _protect_se(mm: re.Match) -> str:
         key = f"PLSE{len(_se_map)}PLSE"
-        # Normalise separators inside token: S01.E01 → S01E01
-        _se_map[key] = re.sub(r"[.\-]", "", m.group(0).upper())
+        _se_map[key] = re.sub(r"[.\-]", "", mm.group(0).upper())
         return key
-    stem = _SE_RE.sub(_protect_se, stem)
+    tags_part = _SE_RE.sub(_protect_se, tags_part)
 
     # 2. Protect audio channel notation (AAC5.1, 7.1, 2.0 …)
-    # Must run BEFORE separator replacement so the dot in "5.1" survives
     _audio_map: dict[str, str] = {}
-    def _protect_audio(m: re.Match) -> str:
+    def _protect_audio(mm: re.Match) -> str:
         key = f"PLAU{len(_audio_map)}PLAU"
-        _audio_map[key] = m.group(0)
+        _audio_map[key] = mm.group(0)
         return key
-    stem = _AUDIO_CH_RE.sub(_protect_audio, stem)
+    tags_part = _AUDIO_CH_RE.sub(_protect_audio, tags_part)
 
     # 3. Strip domain watermarks (www.site.com / site.com)
-    stem = _SITE_TLD_RE.sub(" ", stem)
+    tags_part = _SITE_TLD_RE.sub(" ", tags_part)
 
     # 4. Strip known piracy site names (2 passes for adjacent tokens)
     for _ in range(2):
-        stem = _SITE_RE.sub(" ", stem)
+        tags_part = _SITE_RE.sub(" ", tags_part)
 
     # 5. Replace separators (dots, underscores, brackets …) with space
-    stem = _SEP_RE.sub(" ", stem)
+    tags_part = _SEP_RE.sub(" ", tags_part)
 
     # 6. Replace hyphens that are NOT inside compound tech tags with space
-    #    e.g. "WEB-DL" and "DTS-HD" → keep; "title-site" → strip
-    stem = re.sub(r"(?<!\w)-(?!\w)|(?<=\s)-|-(?=\s)", " ", stem)
+    tags_part = re.sub(r"(?<!\w)-(?!\w)|(?<=\s)-|-(?=\s)", " ", tags_part)
 
     # 7. Strip junk tech tags
-    stem = _TECH_STRIP_RE.sub(" ", stem)
+    tags_part = _TECH_STRIP_RE.sub(" ", tags_part)
 
-    # 7. Strip common scene release group tags (e.g. -YIFY, -FGT, -RARBG at end)
-    #    Pattern: hyphen + all-caps or known group name at end of stem
-    stem = re.sub(r"(?i)\s*-\s*[A-Z0-9]{2,10}$", "", stem)
-    # Also strip any leftover bare release group tokens at the very end
-    stem = re.sub(r"(?i)\s+[A-Z]{2,8}$", lambda m: "" if m.group().strip().isupper() else m.group(), stem)
+    # 8. Strip common scene release group tags (e.g. -YIFY, -FGT, -RARBG at end)
+    tags_part = re.sub(r"(?i)\s*-\s*[A-Z0-9]{2,10}$", "", tags_part)
+    tags_part = re.sub(
+        r"(?i)\s+[A-Z]{2,8}$",
+        lambda mm: "" if mm.group().strip().isupper() else mm.group(),
+        tags_part,
+    )
 
-    # 8. Restore protected tokens
+    # 9. Restore protected tokens
     for key, val in _audio_map.items():
-        stem = stem.replace(key, val)
+        tags_part = tags_part.replace(key, val)
     for key, val in _se_map.items():
-        stem = stem.replace(key, val)
+        tags_part = tags_part.replace(key, val)
 
-    # 9. Collapse whitespace
+    tags_part = re.sub(r"\s+", " ", tags_part).strip()
+    tags_part = _normalise_tags(tags_part)
+
+    stem = f"{title_part} {tags_part}".strip() if tags_part else title_part
     stem = re.sub(r"\s+", " ", stem).strip()
-
-    # 10. Normalise tag casing (bluray→BluRay, webdl→WEB-DL …)
-    stem = _normalise_tags(stem)
 
     return stem + ext
 
