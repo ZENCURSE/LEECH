@@ -142,6 +142,6 @@ async def fetch_metadata(title: str, year: str | None) -> dict | None:
             "age_rating":      ratings["age_rating"],
             "rotten_tomatoes": ratings["rotten_tomatoes"],
             "media_type":      mtype,
-            "poster_url":      f"{_W780}{poster_path}" if poster_path else "",
+            "poster_url":      f"{_ORIG}{poster_path}" if poster_path else "",
             "backdrop_url":    backdrop_url,
         }

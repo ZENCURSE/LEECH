@@ -12,27 +12,38 @@ def cancel_cmd(tid: str) -> str:
     return f"<code>/c1_{tid.lower()}</code>"
 
 # ── Progress bar — emoji-square fill, bracket frame ────────────
-# 「🟦🟦🟦🟦⬜⬜⬜⬜⬜⬜」  Uses colored square emoji instead of Unicode
-# block characters (▉▫) — emoji render pixel-identical on every device
-# since they're not font glyphs, whereas ▉/▫/▰/▱ etc. can render as
-# generic/missing boxes depending on the phone's font fallback chain.
-# Kept the 「 」 corner-bracket frame for the bold, distinct look.
+# 「🟦🟦🟦🔷🟦🔘⬜⬜⬜⬜⬜⬜」  Uses colored square/diamond emoji instead of
+# Unicode block characters (▉▫) — emoji render pixel-identical on every
+# device since they're not font glyphs, whereas ▉/▫/▰/▱ etc. can render
+# as generic/missing boxes depending on the phone's font fallback chain.
 # Download and upload use different fill colors (blue vs orange) so a
-# glance at the bar alone tells you which phase a task is in.
+# glance at the bar alone tells you which phase a task is in. A diamond
+# accent cell every 4th slot gives the fill a bit of texture instead of
+# a flat block, and a glowing head marker at the leading edge gives it
+# a sense of motion.
 _BAR_FILL = {
     "downloading": "🟦",
     "uploading":   "🟧",
 }
+_BAR_ACCENT = {
+    "downloading": "🔷",
+    "uploading":   "🔶",
+}
 
-def bar(pct: float, width: int = 12, fill: str = "🟩") -> str:
+def bar(pct: float, width: int = 12, fill: str = "🟩", accent: str = "") -> str:
     filled = int(width * pct / 100)
     empty  = width - filled
-    body = fill * filled + "⬜" * empty
-    # a small head marker right at the leading edge gives the bar a sense
-    # of motion instead of looking like a static striped block
-    if 0 < filled < width:
-        body = fill * (filled - 1) + "🔘" + "⬜" * empty
-    return "「" + body + "」"
+    accent = accent or fill
+    cells  = []
+    for i in range(filled):
+        if i == filled - 1 and filled < width:
+            cells.append("🔘")                    # glowing head at the leading edge
+        elif (i + 1) % 4 == 0:
+            cells.append(accent)                   # subtle texture cell
+        else:
+            cells.append(fill)
+    cells += ["⬜"] * empty
+    return "「" + "".join(cells) + "」"
 
 # ── Status meta ───────────────────────────────────────────────
 _STYLE = {
@@ -108,7 +119,7 @@ def _active_card(status: str, name: str, done: int, total: int,
         f"║",
         _fname(name),
         f"║",
-        f"║  <code>{bar(pct, fill=_BAR_FILL.get(status, '🟩'))}</code>  <b>{pct:.1f}%</b>",
+        f"║  <code>{bar(pct, fill=_BAR_FILL.get(status, '🟩'), accent=_BAR_ACCENT.get(status, ''))}</code>  ▸ <b>{pct:.1f}%</b>",
         f"║",
         f"╠═「 📊 <b>STATS</b> 」",
         f"║  ➤ <b>Size</b>: <code>{human_size_pair(done, total)}</code>",
@@ -280,7 +291,7 @@ def _task_block(num: int, tid: str, task: dict) -> str:
 
     if status in ("downloading", "uploading"):
         lines += [
-            f"│  <code>{bar(pct, 12, fill=_BAR_FILL.get(status, '🟩'))}</code>  <b>{pct:.0f}%</b>",
+            f"│  <code>{bar(pct, 12, fill=_BAR_FILL.get(status, '🟩'), accent=_BAR_ACCENT.get(status, ''))}</code>  ▸ <b>{pct:.0f}%</b>",
             f"│",
             f"│  ➤ <b>Size</b>: <code>{human_size_pair(done, total)}</code>",
             f"│  ➤ <b>Speed</b>: <code>{human_speed(speed)}</code>",
@@ -378,7 +389,7 @@ def build_progress_card(
     }
     icon, label = icons.get(status, ("⚙️", status.upper()))
 
-    bar_str = bar(pct, 15, fill=_BAR_FILL.get(status, "🟩"))
+    bar_str = bar(pct, 15, fill=_BAR_FILL.get(status, "🟩"), accent=_BAR_ACCENT.get(status, ""))
 
     lines = [
         f"╔═「 {icon} <b>{label}</b> 」",

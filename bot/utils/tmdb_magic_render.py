@@ -838,7 +838,7 @@ def _make_magic_thumbnail_sync(
         with a thin, even border and a tight soft shadow, vertically
         centered to match the frame
     """
-    S = 2  # render scale for HD output
+    S = 3  # render scale for HD output — 1280x720 * 3 = 3840x2160 (true 4K)
     W, H = 1280 * S, 720 * S  # standard 16:9 video-thumbnail size
     genres = genres or []
 

@@ -38,7 +38,9 @@ TMP_DIR    = os.path.join(_BASE, "thumb_tmp")
 CACHE_TTL  = 30 * 24 * 3600    # 30 days
 CACHE_MAX  = 500 * 1024 * 1024  # 500 MB cap
 
-_W, _H          = 1280, 720          # HD target
+_W, _H          = 1280, 720          # legacy 16:9 reference ratio (letterbox calc only)
+_COVER_CAP_W    = 3840               # cover= resolution cap — matches Magic Thumbnail's native 4K render
+_COVER_CAP_H    = 2160
 _THUMB_MAX      = 200 * 1024         # 200 KB — thumb= small preview hard limit
 _COVER_MAX      = 5 * 1024 * 1024   # 5 MB  — cover= full-quality HD poster
 
@@ -238,10 +240,10 @@ def prep_cover(src: str, dest: str | None = None) -> str | None:
     The cover= field accepts a full Photo (not a thumbnail), so Telegram
     stores and displays it at full resolution when the video is opened.
 
-    Output: 1280×720 JPEG at HIGH QUALITY (up to 5 MB).
+    Output: native resolution JPEG at HIGH QUALITY (up to 5 MB), capped at
+    3840×2160 (matches the Magic Thumbnail renderers' own 4K output) —
+    never upscaled, and never downscaled below what the source already is.
     We do NOT compress to 200 KB here — that limit only applies to thumb=.
-    aiogram 3.18.0 properly handles the cover as a separate photo upload,
-    so the full-quality poster is shown in the video player.
     """
     if not src or not os.path.exists(src):
         return None
@@ -251,26 +253,39 @@ def prep_cover(src: str, dest: str | None = None) -> str | None:
         img    = Image.open(src).convert("RGB")
         w, h   = img.size
 
-        # Scale to exactly 1280×720, letterbox with black bars
-        scale  = min(_W / w, _H / h)
-        nw, nh = int(w * scale), int(h * scale)
-        img    = img.resize((nw, nh), Image.LANCZOS)
-        canvas = Image.new("RGB", (_W, _H), (0, 0, 0))
-        canvas.paste(img, ((_W - nw) // 2, (_H - nh) // 2))
+        # Only downscale if the source exceeds our cap — never upscale a
+        # smaller source (that would just blur it, not add real detail)
+        scale = min(_COVER_CAP_W / w, _COVER_CAP_H / h, 1.0)
+        if scale < 1.0:
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        nw, nh = img.size
+
+        # Letterbox only if the aspect ratio meaningfully deviates from
+        # 16:9 — our own renderers already output exact 16:9, so this
+        # path only fires for odd-shaped user-supplied custom thumbs
+        target_ratio = _W / _H
+        actual_ratio = nw / nh
+        if abs(actual_ratio - target_ratio) > 0.02:
+            box_w, box_h = (nw, int(nw / target_ratio)) if actual_ratio > target_ratio \
+                else (int(nh * target_ratio), nh)
+            canvas = Image.new("RGB", (box_w, box_h), (0, 0, 0))
+            canvas.paste(img, ((box_w - nw) // 2, (box_h - nh) // 2))
+        else:
+            canvas = img
 
         # Save at FULL QUALITY — this is the movie poster people will see
-        # Never compress to 200 KB here (that's only for thumb=)
-        for q in (95, 90, 85):
+        # Never compress below the top quality tier unless the 5 MB cap forces it
+        for q in (97, 94, 90, 85):
             canvas.save(out, "JPEG", quality=q, subsampling=0, optimize=True)
             sz = os.path.getsize(out)
             if sz <= _COVER_MAX:
                 break
 
         size_kb = os.path.getsize(out) / 1024
-        LOGGER.debug(f"[ThumbStore] cover= HD poster: {nw}×{nh} → {size_kb:.0f} KB (full quality)")
+        LOGGER.debug(f"[ThumbStore] cover= HD poster: {canvas.size[0]}×{canvas.size[1]} → {size_kb:.0f} KB (full quality)")
         return out
     except Exception as e:
-        LOGGER.warning(f"[ThumbStore] prep_cover (1280): {e}")
+        LOGGER.warning(f"[ThumbStore] prep_cover: {e}")
         return None
 
 

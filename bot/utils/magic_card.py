@@ -182,10 +182,12 @@ def _draw_chip(draw, x, y, label, font, S) -> tuple:
 
 
 # ── Frame extraction ──────────────────────────────────────────────────────
-async def extract_frame(video_path: str, dest: str, w: int = 1920, h: int = 1080) -> bool:
-    """Grab a single frame at ~30% into the video, scaled+cropped to fully
-    cover (w, h) — no letterbox bars, so it works as a clean full-bleed
-    backdrop / poster source."""
+async def extract_frame(video_path: str, dest: str, max_dim: int = 3840) -> bool:
+    """Grab a single frame at ~30% into the video, at its NATIVE resolution
+    (only downscaled if it exceeds max_dim — never upscaled, and never
+    force-cropped here). Keeping the source at full native detail and
+    doing exactly one high-quality resample later (in the renderer's own
+    cover-crop step) avoids the quality loss from resampling twice."""
     from asyncio import create_subprocess_exec
     from asyncio.subprocess import PIPE
 
@@ -206,8 +208,8 @@ async def extract_frame(video_path: str, dest: str, w: int = 1920, h: int = 1080
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-ss", str(seek), "-i", video_path, "-vframes", "1",
-        "-vf", f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}",
-        "-q:v", "2", "-y", dest,
+        "-vf", f"scale='min({max_dim},iw)':'min({max_dim},ih)':force_original_aspect_ratio=decrease",
+        "-q:v", "1", "-y", dest,
     ]
     try:
         pr = await create_subprocess_exec(*cmd, stdout=PIPE, stderr=PIPE)
@@ -267,7 +269,7 @@ def _human_size(n: int) -> str:
 # ── Main render ────────────────────────────────────────────────────────────
 def _render_sync(frame_path: str, output_path: str, title: str, meta: dict,
                   custom_channel: str = "") -> None:
-    S = 2
+    S = 3
     W, H = 1280 * S, 720 * S
 
     panel_w, panel_h = 300 * S, 452 * S
