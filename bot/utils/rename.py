@@ -34,6 +34,7 @@ _SITE_RE = re.compile(
 _SITE_TLD_RE = re.compile(
     r"(?i)[\s.\-_\[\](]*(www\.)?[a-z0-9]+"
     r"\.(com|net|org|in|io|co|me|tv|mobi|site|xyz|club|info|cc|vc|pw|ws|to|li|re|nl)"
+    r"(?![a-z0-9])"
     r"[\s.\-_\[\])]*"
 )
 
