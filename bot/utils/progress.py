@@ -12,15 +12,27 @@ def cancel_cmd(tid: str) -> str:
     return f"<code>/c1_{tid.lower()}</code>"
 
 # ── Progress bar — emoji-square fill, bracket frame ────────────
-# 「🟩🟩🟩🟩⬜⬜⬜⬜⬜⬜」  Uses colored square emoji instead of Unicode
+# 「🟦🟦🟦🟦⬜⬜⬜⬜⬜⬜」  Uses colored square emoji instead of Unicode
 # block characters (▉▫) — emoji render pixel-identical on every device
 # since they're not font glyphs, whereas ▉/▫/▰/▱ etc. can render as
 # generic/missing boxes depending on the phone's font fallback chain.
 # Kept the 「 」 corner-bracket frame for the bold, distinct look.
-def bar(pct: float, width: int = 10) -> str:
+# Download and upload use different fill colors (blue vs orange) so a
+# glance at the bar alone tells you which phase a task is in.
+_BAR_FILL = {
+    "downloading": "🟦",
+    "uploading":   "🟧",
+}
+
+def bar(pct: float, width: int = 12, fill: str = "🟩") -> str:
     filled = int(width * pct / 100)
     empty  = width - filled
-    return "「" + "🟩" * filled + "⬜" * empty + "」"
+    body = fill * filled + "⬜" * empty
+    # a small head marker right at the leading edge gives the bar a sense
+    # of motion instead of looking like a static striped block
+    if 0 < filled < width:
+        body = fill * (filled - 1) + "🔘" + "⬜" * empty
+    return "「" + body + "」"
 
 # ── Status meta ───────────────────────────────────────────────
 _STYLE = {
@@ -96,7 +108,7 @@ def _active_card(status: str, name: str, done: int, total: int,
         f"║",
         _fname(name),
         f"║",
-        f"║  <code>{bar(pct)}</code>  <b>{pct:.1f}%</b>",
+        f"║  <code>{bar(pct, fill=_BAR_FILL.get(status, '🟩'))}</code>  <b>{pct:.1f}%</b>",
         f"║",
         f"╠═「 📊 <b>STATS</b> 」",
         f"║  ➤ <b>Size</b>: <code>{human_size_pair(done, total)}</code>",
@@ -193,7 +205,7 @@ def queued_card(name: str, tid: str, position: int = 0) -> str:
         f"║",
         _fname(name),
         f"║",
-        f"║  <code>「⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜」</code>  <b>waiting</b>",
+        f"║  <code>「⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜」</code>  <b>waiting</b>",
         f"║",
         f"╠═「 📋 <b>INFO</b> 」",
         f"║  ➤ <b>Queue</b>  :  {pos_str}",
@@ -268,7 +280,7 @@ def _task_block(num: int, tid: str, task: dict) -> str:
 
     if status in ("downloading", "uploading"):
         lines += [
-            f"│  <code>{bar(pct, 12)}</code>  <b>{pct:.0f}%</b>",
+            f"│  <code>{bar(pct, 12, fill=_BAR_FILL.get(status, '🟩'))}</code>  <b>{pct:.0f}%</b>",
             f"│",
             f"│  ➤ <b>Size</b>: <code>{human_size_pair(done, total)}</code>",
             f"│  ➤ <b>Speed</b>: <code>{human_speed(speed)}</code>",
@@ -366,7 +378,7 @@ def build_progress_card(
     }
     icon, label = icons.get(status, ("⚙️", status.upper()))
 
-    bar_str = bar(pct, 15)
+    bar_str = bar(pct, 15, fill=_BAR_FILL.get(status, "🟩"))
 
     lines = [
         f"╔═「 {icon} <b>{label}</b> 」",
