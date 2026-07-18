@@ -1078,8 +1078,10 @@ async def generate_hd_thumb(
     Priority:
       1. Explicit custom_thumb passed by caller
       2. User's saved custom thumbnail (from /settings)
-      3. Video: "Magic Thumbnail" card built from the video's own extracted
-         frame + real ffprobe metadata (title/quality/size/duration/codec)
+      3. Video: "Magic Thumbnail" card — TMDB match found → real poster,
+         overview, rating, genres, runtime, age rating, RT score (same
+         design as Auto_thumb). No match → card built from the video's
+         own extracted frame + real ffprobe metadata instead.
       4. Non-video (audio etc.): Fanart/TMDB/OMDB/iTunes/ffmpeg-frame chain
       5. None — NO fake/custom title card is generated
     """
@@ -1129,12 +1131,28 @@ async def generate_hd_thumb(
         is_video = False
 
     if is_video:
-        try:
-            from bot.utils.magic_card import generate_leech_magic_thumb
-            custom_channel = ""
-            if uid:
+        custom_channel = ""
+        if uid:
+            try:
                 from bot.database import users_db
                 custom_channel = users_db.get_settings(uid).get("custom_channel", "")
+            except Exception:
+                pass
+
+        # 3a. Try the real TMDB-driven card first — real poster, overview,
+        #     rating, genres, age rating, RT score (matches Auto_thumb's design)
+        try:
+            from bot.utils.tmdb_magic import generate_tmdb_magic_thumb
+            dest = os.path.join(tmp, f"tmdbmagic_{int(time.time())}.jpg")
+            if await generate_tmdb_magic_thumb(title, year, dest, custom_channel):
+                return dest
+        except Exception:
+            LOGGER.debug("generate_hd_thumb: TMDB magic thumb failed", exc_info=True)
+
+        # 3b. No TMDB match (or it failed) — fall back to a card built from
+        #     the video's own extracted frame, no external data needed
+        try:
+            from bot.utils.magic_card import generate_leech_magic_thumb
             dest = os.path.join(tmp, f"magic_{int(time.time())}.jpg")
             if await generate_leech_magic_thumb(file_path, dest, title, custom_channel):
                 return dest

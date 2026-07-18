@@ -190,7 +190,7 @@ def clean_name(name: str) -> str:
     The.Boys.S03E01.1080p.WEB-DL.x265.AAC5.1.mkv
       → The Boys S03E01 1080p WEB-DL x265 AAC5.1.mkv
     """
-    stem, ext = os.path.splitext(name)
+    stem, ext = os.path.splitext(os.path.basename(name))
 
     m = _SPLIT_RE.search(stem)
     title_part = stem[: m.start()] if m else stem
