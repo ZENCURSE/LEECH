@@ -34,8 +34,13 @@ from bot.utils.media_utils import (
 from bot.database import users_db
 
 CHUNK          = 4 * 1024 * 1024           # 4 MB — fast read/write for large file splits
-_2GB           = 2 * 1024 * 1024 * 1024   # 2 GB — standard Telegram limit
-_4GB           = 4 * 1024 * 1024 * 1024   # 4 GB — Premium session limit
+_2GB           = 2000 * 1024 * 1024       # 2000 MiB — Telegram's real practical limit
+_4GB           = 4000 * 1024 * 1024       # 4000 MiB — Premium session limit
+# NOTE: intentionally NOT 2*1024**3/4*1024**3 (2048/4096 MiB). Files in the
+# 2000-2048 MiB gap were passing the old ">2GB" check as "fine, don't split"
+# and then failing to upload outright since Telegram's actual enforced cap
+# sits at the lower, safer number. This is the standard threshold used by
+# most Telegram leech bots for exactly this reason.
 
 
 def _split_size() -> int:

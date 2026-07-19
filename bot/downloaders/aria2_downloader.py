@@ -172,7 +172,40 @@ async def torrent_download(url: str, dest_dir: str, task_id: str, msg,
         gid = await ar2.add_uri([url], dest_dir, options)
     elif os.path.isfile(url):
         gid = await ar2.add_torrent(url, dest_dir, options)
+    elif url.startswith(("http://", "https://")):
+        # Remote .torrent URL (or a tracker link that serves one) — aria2's
+        # addUri can't parse torrent bytes on the fly, so fetch it first,
+        # then add the downloaded .torrent file
+        torrent_path = await _fetch_torrent_file(url, dest_dir)
+        gid = await ar2.add_torrent(torrent_path, dest_dir, options)
+        try:
+            os.remove(torrent_path)
+        except Exception:
+            pass
     else:
         raise ValueError(f"Invalid torrent source: {url}")
 
     return await _poll_until_done(gid, task_id, msg, dest_dir, label_prefix="torrent")
+
+
+async def _fetch_torrent_file(url: str, dest_dir: str) -> str:
+    """Download a .torrent file from a direct URL/tracker link so it can be
+    handed to aria2.addTorrent (which needs the actual file, not a URL)."""
+    import aiohttp
+    headers = {"User-Agent": UA}
+    timeout = aiohttp.ClientTimeout(total=60, connect=15)
+    async with aiohttp.ClientSession(headers=headers) as session:
+        async with session.get(url, timeout=timeout, allow_redirects=True) as r:
+            if r.status != 200:
+                raise RuntimeError(f"Couldn't fetch .torrent file (HTTP {r.status}): {url}")
+            data = await r.read()
+    if not data or data[:1] != b"d":  # bencoded dicts always start with 'd'
+        raise RuntimeError(
+            "That link didn't return a valid .torrent file "
+            "(the tracker may require login/cookies, or the link has expired)."
+        )
+    os.makedirs(dest_dir, exist_ok=True)
+    path = os.path.join(dest_dir, f"_fetched_{int(time.time())}.torrent")
+    with open(path, "wb") as f:
+        f.write(data)
+    return path

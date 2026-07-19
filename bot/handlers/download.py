@@ -511,6 +511,131 @@ async def _refresh_status_card(uid: int):
         _status_msgs.pop(uid, None)
 
 
+@Client.on_message(filters.command("torrent") & (filters.private | filters.group))
+async def cmd_torrent(client: Client, message: Message):
+    """
+    /torrent — always forces the torrent/magnet path, regardless of how
+    the link is shaped (unlike /d, which has to guess from the URL).
+    Works three ways:
+      • /torrent <magnet_or_.torrent_url>
+      • reply to a message containing a magnet/.torrent link
+      • reply to an uploaded .torrent FILE
+    """
+    if not await auth_required(message):
+        return
+    if await _ensure_started(client, message):
+        return
+
+    replied = message.reply_to_message
+
+    # Case 1: reply to an uploaded .torrent file
+    if replied and replied.document:
+        fname = (replied.document.file_name or "").lower()
+        is_torrent_doc = (
+            fname.endswith(".torrent") or
+            replied.document.mime_type == "application/x-bittorrent"
+        )
+        if is_torrent_doc:
+            await _start_torrent(client, message, replied=replied)
+            return
+
+    # Case 2: reply to a message containing a magnet/torrent link
+    if replied and replied.text:
+        txt = replied.text.strip()
+        if txt.startswith("magnet:") or re.match(r"https?://\S+", txt):
+            await _start_torrent(client, message, url=txt)
+            return
+
+    # Case 3: /torrent <magnet_or_url>
+    parts = message.text.split(None, 1)
+    if len(parts) < 2:
+        return await message.reply_text(
+            "❌ Usage:\n"
+            "• <code>/torrent &lt;magnet_or_.torrent_url&gt;</code>\n"
+            "• Reply to a message with a magnet/.torrent link, then <code>/torrent</code>\n"
+            "• Reply to an uploaded <code>.torrent</code> file with <code>/torrent</code>",
+            parse_mode=enums.ParseMode.HTML,
+        )
+    url = parts[1].strip()
+    if not (url.startswith("magnet:") or re.match(r"https?://\S+", url)):
+        return await message.reply_text(
+            "❌ That doesn't look like a magnet link or a URL.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+    await _start_torrent(client, message, url=url)
+
+
+async def _start_torrent(client: Client, message: Message, url: str | None = None, replied=None):
+    uid = message.from_user.id
+
+    can, reason = tm.can_add_task(uid)
+    if not can:
+        cap = (
+            f"⚠️ The bot is at full capacity (<b>{config.TOTAL_TASKS}</b> active tasks).\n"
+            "Please wait for a slot to free up." if reason == "global" else
+            f"⚠️ You already have <b>{config.MAX_TASKS}</b> active tasks.\n"
+            "Use /status to check them or /cancel &lt;id&gt; to free a slot."
+        )
+        return await message.reply_text(cap, parse_mode=enums.ParseMode.HTML)
+
+    label    = (url or "torrent_file")[:60]
+    tid      = tm.create_task(uid, label)
+    dest_dir = os.path.join(config.DOWNLOAD_DIR, tid)
+
+    loop = asyncio.get_event_loop()
+    coro_task = loop.create_task(_run_torrent(client, message, url, replied, tid, dest_dir, uid))
+    tm.set_asyncio_task(tid, coro_task)
+
+
+async def _run_torrent(client: Client, message: Message, url: str | None, replied,
+                        tid: str, dest_dir: str, uid: int):
+    is_group = message.chat.type != enums.ChatType.PRIVATE
+    action = ""
+
+    await _send_or_update_status_card(uid, message)
+    msg = _status_msgs.get(uid)
+    if not msg:
+        msg = await message.reply_text(
+            f"🌊 Adding torrent...\n🆔 <code>{tid}</code>",
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=task_kb(tid),
+        )
+
+    start = time.monotonic()
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+        from bot.downloaders.aria2_downloader import torrent_download
+
+        if replied is not None:
+            await _edit(msg, tid, "📥 Downloading .torrent file...", uid, is_group)
+            source = await client.download_media(
+                replied, file_name=os.path.join(dest_dir, "source.torrent"),
+            )
+        else:
+            source = url
+
+        await _edit(msg, tid, "🌊 Adding torrent...", uid, is_group)
+        path = await torrent_download(source, dest_dir, tid, msg, uid)
+        await _post_download(client, message, msg, [path], dest_dir, tid, uid, action, start, is_group)
+
+    except asyncio.CancelledError:
+        tm.cancel_task(tid)
+        task_name = tm.get_task(tid) or {}
+        await _cancel_msg(msg, tid, uid=uid, task_name=task_name.get("name", ""))
+    except Exception as e:
+        print(f"[{tid}] ERROR:\n{traceback.format_exc()}")
+        await _error_msg(msg, tid, e, uid=uid)
+    finally:
+        tm.finish_task(tid)
+        _cleanup(dest_dir)
+        await _refresh_status_card(uid)
+        if not is_group:
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+
+
 async def _run_start(client: Client, message: Message, url: str, action: str,
                      tid: str, dest_dir: str, uid: int):
     is_group = message.chat.type != enums.ChatType.PRIVATE

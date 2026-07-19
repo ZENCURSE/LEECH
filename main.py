@@ -89,6 +89,7 @@ async def main():
         await app.set_bot_commands([
             BotCommand("start",    "👋 Start the bot"),
             BotCommand("d",        "⬇️ Download / leech a URL"),
+            BotCommand("torrent",  "🌊 Download a magnet/.torrent link or file"),
             BotCommand("jdleech",  "🔗 JD-style multi-host download"),
             BotCommand("status",   "📊 View your active tasks"),
             BotCommand("cancel",   "🚫 Cancel a task"),

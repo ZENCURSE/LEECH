@@ -62,6 +62,7 @@ HELP_TEXT = (
     "<code>/d &lt;url&gt; zip</code>     — download → zip\n"
     "<code>/d &lt;url&gt; unzip</code>   — download → extract\n"
     "<code>/jdleech &lt;url&gt;</code>   — multi-host direct links\n"
+    "<code>/torrent &lt;link&gt;</code>  — magnet/.torrent link or file\n"
     "<i>Or just paste a link directly.</i>\n\n"
     "<b>Sources:</b> YouTube · Mega.nz · MediaFire · GoFile\n"
     "TeraBox · OneDrive · Torrent/Magnet · 1000+ via yt-dlp\n\n"
