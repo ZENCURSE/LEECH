@@ -30,7 +30,7 @@ _BAR_ACCENT = {
     "uploading":   "🔶",
 }
 
-def bar(pct: float, width: int = 12, fill: str = "🟩", accent: str = "") -> str:
+def bar(pct: float, width: int = 10, fill: str = "🟩", accent: str = "") -> str:
     filled = int(width * pct / 100)
     empty  = width - filled
     accent = accent or fill
@@ -216,7 +216,7 @@ def queued_card(name: str, tid: str, position: int = 0) -> str:
         f"║",
         _fname(name),
         f"║",
-        f"║  <code>「⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜」</code>  <b>waiting</b>",
+        f"║  <code>「⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜」</code>  <b>waiting</b>",
         f"║",
         f"╠═「 📋 <b>INFO</b> 」",
         f"║  ➤ <b>Queue</b>  :  {pos_str}",
@@ -291,7 +291,7 @@ def _task_block(num: int, tid: str, task: dict) -> str:
 
     if status in ("downloading", "uploading"):
         lines += [
-            f"│  <code>{bar(pct, 12, fill=_BAR_FILL.get(status, '🟩'), accent=_BAR_ACCENT.get(status, ''))}</code>  ▸ <b>{pct:.0f}%</b>",
+            f"│  <code>{bar(pct, 10, fill=_BAR_FILL.get(status, '🟩'), accent=_BAR_ACCENT.get(status, ''))}</code>  ▸ <b>{pct:.0f}%</b>",
             f"│",
             f"│  ➤ <b>Size</b>: <code>{human_size_pair(done, total)}</code>",
             f"│  ➤ <b>Speed</b>: <code>{human_speed(speed)}</code>",
@@ -389,7 +389,7 @@ def build_progress_card(
     }
     icon, label = icons.get(status, ("⚙️", status.upper()))
 
-    bar_str = bar(pct, 15, fill=_BAR_FILL.get(status, "🟩"), accent=_BAR_ACCENT.get(status, ""))
+    bar_str = bar(pct, 10, fill=_BAR_FILL.get(status, "🟩"), accent=_BAR_ACCENT.get(status, ""))
 
     lines = [
         f"╔═「 {icon} <b>{label}</b> 」",
