@@ -46,6 +46,9 @@ def _welcome_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton("📊 My Tasks",   callback_data="nav_status"),
         ],
         [
+            InlineKeyboardButton("👥 Use in Group", url=config.GROUP_LINK),
+        ],
+        [
             InlineKeyboardButton("ℹ️ About",      callback_data="nav_about"),
         ],
     ])

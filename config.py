@@ -56,6 +56,7 @@ ARIA2_SECRET = "nxt_hub"              # Leave blank or set a secret token
 
 # ── Branding ──────────────────────────────────────────────────
 WATERMARK = "@NXT_HUB"
+GROUP_LINK = "https://t.me/+82O7b0uT_g4xNzhl"   # Shown as a button so users can use the bot in the group
 
 # ── Encoding (FFmpeg) ─────────────────────────────────────────
 
