@@ -9,7 +9,7 @@ Key fixes:
 """
 from pyrogram import enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-import os, math, time, asyncio, aiofiles, re
+import os, math, time, asyncio, aiofiles, re, shutil
 import config
 
 from pyrogram.errors import FloodWait, BadRequest, RPCError
@@ -41,10 +41,19 @@ _4GB           = 4 * 1024 * 1024 * 1024   # 4 GB — Premium session limit
 def _split_size() -> int:
     """
     Return the correct split size based on whether a premium user session is
-    configured. Without SESSION: 2 GB. With SESSION: 4 GB.
+    configured AND usable. Without SESSION: 2 GB. With SESSION: 4 GB — but
+    ONLY if DUMP_CHANNEL is also configured, since the premium user_app
+    session can't message an arbitrary chat it has never interacted with
+    (that's what was silently failing 2-4 GB uploads before: user_app
+    tried to DM the requester directly and got rejected). With a relay
+    channel available, uploads go through _send_relay() instead — user_app
+    uploads there, then the bot copies it to the real destination, which
+    always works since the bot is always a member of both.
     Files larger than this are automatically split into numbered parts.
     """
-    return _4GB if config.SESSION else _2GB
+    if config.SESSION and getattr(config, "DUMP_CHANNEL", 0):
+        return _4GB
+    return _2GB
 
 # Tokens that belong in the info block — never go into filename
 _INFO_TOKENS = frozenset({"size", "language", "time", "quality", "codec", "audio", "fps", "ext", "date"})
@@ -60,25 +69,33 @@ async def _split_file(path: str, part_size: int) -> list[str]:
     base, ext = os.path.splitext(path)
     parts: list[str] = []
 
-    async with aiofiles.open(path, "rb") as src:
-        for i in range(n):
-            pp   = f"{base}.part{i+1:02d}{ext}"
-            left = part_size
-            written = 0
-            async with aiofiles.open(pp, "wb") as dst:
-                while left > 0:
-                    chunk = await src.read(min(CHUNK, left))
-                    if not chunk:
-                        break
-                    await dst.write(chunk)
-                    left    -= len(chunk)
-                    written += len(chunk)
-            if written == 0:
-                # Empty tail part — remove and stop
-                try: os.remove(pp)
-                except Exception: pass
-                break
-            parts.append(pp)
+    try:
+        async with aiofiles.open(path, "rb") as src:
+            for i in range(n):
+                pp   = f"{base}.part{i+1:02d}{ext}"
+                left = part_size
+                written = 0
+                async with aiofiles.open(pp, "wb") as dst:
+                    while left > 0:
+                        chunk = await src.read(min(CHUNK, left))
+                        if not chunk:
+                            break
+                        await dst.write(chunk)
+                        left    -= len(chunk)
+                        written += len(chunk)
+                if written == 0:
+                    # Empty tail part — remove and stop
+                    try: os.remove(pp)
+                    except Exception: pass
+                    break
+                parts.append(pp)
+    except Exception:
+        # Splitting failed partway — clean up whatever parts were already
+        # written so a retry doesn't have to work around orphaned files
+        for pp in parts:
+            try: os.remove(pp)
+            except Exception: pass
+        raise
 
     # Remove the original so disk isn't holding both the source and all parts
     try:
@@ -278,6 +295,31 @@ async def _send_doc(client, chat_id, path, caption, thumb, cb):
     )
 
 
+# ── Relay wrapper for the premium (user_app) client ─────────────
+# user_app is a separate Telegram account/session — it can only message
+# chats it has actually interacted with. It has no relationship with
+# whatever chat the requester messaged the BOT from, so sending directly
+# to that chat_id via user_app fails. Route it through DUMP_CHANNEL
+# instead (user_app is already a member there for the dump feature):
+# upload the real bytes to DUMP_CHANNEL via user_app, then have the bot
+# (always a legitimate member of the destination chat) copy it over —
+# copy_message is a lightweight server-side op, no re-upload involved.
+async def _send_relay(client, chat_id, path, caption, thumb, cb, as_doc, uid=0):
+    from bot import user_app, app as bot_app
+
+    if client is not user_app or not getattr(config, "DUMP_CHANNEL", 0):
+        return await _send(client, chat_id, path, caption, thumb, cb, as_doc, uid)
+
+    relay_chat = int(config.DUMP_CHANNEL)
+    relayed = await _send(client, relay_chat, path, caption, thumb, cb, as_doc, uid)
+    try:
+        return await bot_app.copy_message(chat_id, relay_chat, relayed.id)
+    except Exception:
+        # Bot isn't in the relay channel, or copy failed — best-effort
+        # cleanup of the relay copy, then surface the real error
+        raise
+
+
 async def _send(client, chat_id, path, caption, thumb, cb, as_doc, uid=0):
     """
     Upload file with dual-thumbnail support:
@@ -433,7 +475,24 @@ async def upload_file(client, chat_id: int, file_path: str,
 
     if file_size > split_size:
         n_parts = math.ceil(file_size / split_size)
-        limit   = "4 GB" if config.SESSION else "2 GB"
+        limit   = "4 GB" if split_size == _4GB else "2 GB"
+
+        # Splitting needs roughly another file_size worth of free disk
+        # space (parts are written before the original is removed) —
+        # check up front so a silent disk-full mid-split doesn't look
+        # like a random "cancelled" task
+        try:
+            free = shutil.disk_usage(os.path.dirname(file_path) or ".").free
+            if free < file_size * 1.05:
+                raise RuntimeError(
+                    f"Not enough disk space to split this file — need "
+                    f"~{human_size(file_size)} free, have {human_size(free)}."
+                )
+        except RuntimeError:
+            raise
+        except Exception:
+            pass  # disk_usage failed for some platform reason — proceed anyway
+
         try:
             await msg.edit_text(
                 f"<b>✂️ SPLITTING FILE</b>\n\n"
@@ -445,7 +504,11 @@ async def upload_file(client, chat_id: int, file_path: str,
             )
         except Exception:
             pass
-        parts = await _split_file(file_path, split_size)
+
+        try:
+            parts = await _split_file(file_path, split_size)
+        except Exception as e:
+            raise RuntimeError(f"Failed to split {final_name}: {e}") from e
     else:
         parts = [file_path]
 
@@ -522,7 +585,7 @@ async def upload_file(client, chat_id: int, file_path: str,
         for attempt in range(5):
             if tm.is_cancelled(task_id): raise asyncio.CancelledError
             try:
-                last_sent_msg = await _send(client, chat_id, part, caption, thumb, _cb, as_doc or is_split)
+                last_sent_msg = await _send_relay(client, chat_id, part, caption, thumb, _cb, as_doc or is_split, uid)
                 break
             except asyncio.CancelledError:
                 raise

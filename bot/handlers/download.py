@@ -643,8 +643,8 @@ async def _post_download(client, message, msg, paths, dest_dir, tid, uid, action
             )
         except Exception:
             pass
-        # Use bot app (not user_app) so bot can PM the user
-        from bot import app as bot_app
+        # Large files (premium/user_app) are safely relayed through
+        # DUMP_CHANNEL inside uploader.py — see _send_relay()
         for p in final:
             if tm.is_cancelled(tid):
                 break
