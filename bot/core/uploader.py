@@ -262,18 +262,8 @@ async def _get_thumb_dims(thumb_path: str) -> tuple[int, int]:
             return img.size  # (width, height)
     except Exception:
         pass
-    # Fallback: ffprobe
-    try:
-        import subprocess, json
-        out = subprocess.check_output([
-            "ffprobe", "-v", "error", "-select_streams", "v:0",
-            "-show_entries", "stream=width,height",
-            "-of", "json", thumb_path
-        ], timeout=5).decode()
-        s = json.loads(out)["streams"][0]
-        return int(s["width"]), int(s["height"])
-    except Exception:
-        return 1280, 720
+    # Fallback: ffprobe (non-blocking)
+    return await _ffprobe_dims(thumb_path)
 
 
 def _prep_thumb(thumb_path: str) -> str | None:
@@ -288,10 +278,42 @@ def _prep_cover(thumb_path: str) -> str | None:
     return prep_cover(thumb_path)
 
 
+# ── Async wrappers — run the CPU-heavy PIL work (resize + JPEG re-encode,
+# sometimes on a 4K source) in a background thread instead of blocking the
+# asyncio event loop. A blocked event loop means EVERY other in-flight
+# upload/download's progress callbacks stall too, not just this one —
+# this was a real, silent tax on overall upload throughput whenever more
+# than one task was running.
+async def _prep_thumb_async(thumb_path: str) -> str | None:
+    return await asyncio.get_event_loop().run_in_executor(None, _prep_thumb, thumb_path)
+
+
+async def _prep_cover_async(thumb_path: str) -> str | None:
+    return await asyncio.get_event_loop().run_in_executor(None, _prep_cover, thumb_path)
+
+
+async def _ffprobe_dims(path: str) -> tuple[int, int]:
+    """Non-blocking ffprobe — real video dimensions for Telegram player sizing."""
+    from asyncio import create_subprocess_exec
+    from asyncio.subprocess import PIPE
+    try:
+        pr = await create_subprocess_exec(
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height", "-of", "json", path,
+            stdout=PIPE, stderr=PIPE,
+        )
+        out, _ = await asyncio.wait_for(pr.communicate(), timeout=5)
+        import json as _j
+        s = _j.loads(out.decode())["streams"][0]
+        return int(s["width"]), int(s["height"])
+    except Exception:
+        return 1280, 720
+
+
 # ── Send helpers ──────────────────────────────────────────────
 
 async def _send_doc(client, chat_id, path, caption, thumb, cb):
-    small = _prep_thumb(thumb)
+    small = await _prep_thumb_async(thumb)
     tw, th = await _get_thumb_dims(small) if small else (None, None)
     return await client.send_document(
         chat_id=chat_id, document=path, thumb=small,
@@ -344,26 +366,17 @@ async def _send(client, chat_id, path, caption, thumb, cb, as_doc, uid=0):
 
     # ── Documents ─────────────────────────────────────────────
     if as_doc or (not is_video and not is_audio and not is_image):
-        small = _prep_thumb(thumb)
+        small = await _prep_thumb_async(thumb)
         return await _send_doc(client, chat_id, path, caption, small, cb)
 
     # ── Video ─────────────────────────────────────────────────
     if is_video:
         duration, _, _ = await get_media_info(path)
-        small = _prep_thumb(thumb)    # 320×320 for thumb= (file list preview)
-        cover = _prep_cover(thumb)    # 1280×720 FULL QUALITY for cover= (video player)
+        small = await _prep_thumb_async(thumb)   # 320×320 for thumb= (file list preview)
+        cover = await _prep_cover_async(thumb)   # 1280×720 FULL QUALITY for cover= (video player)
 
         # Real video dimensions for Telegram player sizing
-        try:
-            import subprocess as _sp, json as _j
-            _o = _sp.check_output([
-                "ffprobe", "-v", "error", "-select_streams", "v:0",
-                "-show_entries", "stream=width,height", "-of", "json", path
-            ], timeout=5).decode()
-            _s = _j.loads(_o)["streams"][0]
-            vw, vh = int(_s["width"]), int(_s["height"])
-        except Exception:
-            vw, vh = 1280, 720
+        vw, vh = await _ffprobe_dims(path)
 
         try:
             # Try with cover= first (PyroTGFork ≥ layer 166)
@@ -393,7 +406,7 @@ async def _send(client, chat_id, path, caption, thumb, cb, as_doc, uid=0):
     # ── Audio ─────────────────────────────────────────────────
     if is_audio:
         duration, artist, title = await get_media_info(path)
-        small = _prep_thumb(thumb)
+        small = await _prep_thumb_async(thumb)
         try:
             return await client.send_audio(
                 chat_id=chat_id, audio=path, caption=caption,
