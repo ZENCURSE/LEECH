@@ -166,29 +166,6 @@ async def send_start_prompt(client, message: Message):
 @Client.on_message(filters.command("start") & filters.private)
 async def cmd_start(client: Client, message: Message):
     users_db.mark_started(message.from_user.id)
-
-    # Deep link from a group's "📥 View File in PM" button — /start gf_<token>
-    if len(message.command) > 1 and message.command[1].startswith("gf_"):
-        token = message.command[1][3:]
-        from bot.utils.file_links import resolve
-        ref = resolve(token)
-        if ref:
-            src_chat_id, src_msg_id = ref
-            try:
-                await client.copy_message(message.chat.id, src_chat_id, src_msg_id)
-                return
-            except Exception:
-                await message.reply_text(
-                    "⚠️ Couldn't fetch that file — it may have been deleted, "
-                    "or I no longer have access to that chat.",
-                )
-                return
-        else:
-            await message.reply_text(
-                "⚠️ This link has expired. Please ask for the file again in the group.",
-            )
-            return
-
     await message.reply_text(
         _welcome(message.from_user),
         reply_markup=_welcome_kb(),

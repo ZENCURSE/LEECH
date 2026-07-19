@@ -113,7 +113,8 @@ async def _do_cancel(message: Message, tid: str):
     gid = task.get("gid")
     if gid:
         try:
-            pass  # None  # removed replaced by qBittorrent
+            from bot.utils import aria2_client as ar2
+            await ar2.remove(gid)
         except Exception:
             pass
     await message.reply_text(

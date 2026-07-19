@@ -2,7 +2,7 @@
 URL router — resolves any input to a download backend.
 
 Backends:
-  qbt      → magnet / .torrent  → qBittorrent
+  aria2    → magnet / .torrent  → aria2c
   ytdlp    → video platforms, M3U8/HLS
   jdleech  → premium hosters (explicit /jdleech command)
   ddl      → known hosting sites → direct link extractor → HTTP
@@ -56,7 +56,7 @@ _M3U8_CT = re.compile(
 async def resolve(url: str) -> dict:
     url = url.strip()
 
-    # ── Magnet / torrent → qBittorrent ───────────────────────
+    # ── Magnet / torrent → aria2c ─────────────────────────────
     if url.lower().startswith("magnet:?"):
         return _r(url, torrent=True)
     if urlparse(url).path.lower().endswith(".torrent"):

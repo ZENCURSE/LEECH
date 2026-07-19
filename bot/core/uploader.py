@@ -18,7 +18,7 @@ from bot.utils.progress import done_card, task_kb
 from bot.utils.size_utils import human_size
 from bot.utils.thumbnail import get_thumbnail
 from bot.utils.rename import smart_rename, parse_title_year
-from bot.utils.file_links import make_token, get_bot_username
+from bot.utils.file_links import get_bot_username
 from bot.utils.token_resolver import (
     resolve_tokens, _ffprobe,
     _tok_size, _tok_name, _tok_ext, _tok_date,
@@ -599,18 +599,13 @@ async def upload_file(client, chat_id: int, file_path: str,
     if is_group and origin_msg and not suppress_done_card:
         avg_spd = file_size / max(total_elapsed, 0.001)
         pm_kb = None
-        if last_sent_msg:
-            try:
-                token = make_token(chat_id, last_sent_msg.id)
-                bot_username = await get_bot_username(client)
-                pm_kb = InlineKeyboardMarkup([[
-                    InlineKeyboardButton(
-                        "📥 View File in PM",
-                        url=f"https://t.me/{bot_username}?start=gf_{token}",
-                    )
-                ]])
-            except Exception:
-                pm_kb = None
+        try:
+            bot_username = await get_bot_username(client)
+            pm_kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("📥 View File in PM", url=f"https://t.me/{bot_username}")
+            ]])
+        except Exception:
+            pm_kb = None
         try:
             await origin_msg.reply_text(
                 done_card(final_name, file_size, total_elapsed, avg_spd, task_id, uname),

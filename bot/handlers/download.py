@@ -535,8 +535,8 @@ async def _run_start(client: Client, message: Message, url: str, action: str,
         os.makedirs(dest_dir, exist_ok=True)
 
         if info["is_magnet"] or info["is_torrent"]:
-            from bot.downloaders.qbt_downloader import qbt_download
-            path = await qbt_download(info["url"], dest_dir, tid, msg, uid)
+            from bot.downloaders.aria2_downloader import torrent_download
+            path = await torrent_download(info["url"], dest_dir, tid, msg, uid)
             await _post_download(client, message, msg, [path], dest_dir, tid, uid, action, start, is_group)
             return
 
@@ -697,13 +697,13 @@ async def _post_download(client, message, msg, paths, dest_dir, tid, uid, action
         await _refresh_group_card(uid)
 
 
-# ── Torrent (now handled by qBittorrent — see qbt_downloader.py) ────────────
+# ── Torrent (handled by aria2c — see aria2_downloader.py) ────────────────
 
 async def _handle_torrent(client, message, msg, info, dest_dir, tid, uid, action, start, is_group):
-    """Route torrent/magnet to qBittorrent downloader."""
-    from bot.downloaders.qbt_downloader import qbt_download
+    """Route torrent/magnet to the aria2 downloader."""
+    from bot.downloaders.aria2_downloader import torrent_download
     url   = info["url"]
-    paths = await qbt_download(url, dest_dir, tid, msg, uid)
+    paths = await torrent_download(url, dest_dir, tid, msg, uid)
     paths = [paths] if isinstance(paths, str) else paths
     await _post_download(client, message, msg, paths, dest_dir, tid, uid, action, start, is_group)
 

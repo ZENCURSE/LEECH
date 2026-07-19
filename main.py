@@ -27,7 +27,7 @@ def _start_web_server():
 
 
 def _start_aria2():
-    """aria2 is used for HTTP direct downloads only. Torrents handled by qBittorrent."""
+    """aria2 handles BOTH multi-connection HTTP downloads and torrents/magnets."""
     cmd = [
         "aria2c",
         "--enable-rpc",
