@@ -109,6 +109,7 @@ async def _poll_until_done(gid: str, task_id: str, msg, dest_dir: str,
                 "downloading", name, pct,
                 done=done, total=total, speed=speed, eta=eta,
                 elapsed=time.monotonic() - started, tid=task_id,
+                user_mention=tm.get_user_mention(task_id),
             ),
             kb,
         )

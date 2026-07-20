@@ -385,6 +385,7 @@ def build_progress_card(
     parent_name: str = "",
     part_num: int = 0,
     part_total: int = 0,
+    user_mention: str = "",
 ) -> str:
     """
     Single unified card renderer.
@@ -438,8 +439,15 @@ def build_progress_card(
 
     if part_total > 1:
         lines.append(f"║  ➤ <b>Part</b>: <code>{part_num}/{part_total}</code>")
+    if user_mention:
+        lines.append(f"║  ➤ <b>User</b>: {user_mention}")
     if tid:
         lines.append(f"║  ➤ <b>Task</b>: <code>#{tid}</code>")
+    if status == "splitting" and part_total > 1:
+        lines.append(f"║")
+        lines.append(f"║  <i>ℹ️ Parts send as Document — a split video/audio</i>")
+        lines.append(f"║  <i>file isn't playable as Media, regardless of your</i>")
+        lines.append(f"║  <i>upload format setting.</i>")
 
     lines += [
         f"╚══════════════════════",

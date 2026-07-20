@@ -178,6 +178,7 @@ async def ytdlp_download(
                             speed=speed, eta=eta,
                             elapsed=time.time() - started,
                             tid=task_id,
+                            user_mention=tm.get_user_mention(task_id),
                         ),
                     ),
                     loop,

@@ -135,6 +135,7 @@ async def jd_download(
                 speed=speed, eta=eta,
                 elapsed=now - started,
                 tid=task_id,
+                user_mention=tm.get_user_mention(task_id),
             ),
         )
 

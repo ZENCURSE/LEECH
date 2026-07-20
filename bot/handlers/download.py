@@ -26,6 +26,16 @@ _pending:   dict[str, dict] = {}
 _selection: dict[str, set]  = {}
 
 
+def _mention(user) -> str:
+    """@username if set, else a clickable name mention, else 'someone'."""
+    if not user:
+        return "someone"
+    if getattr(user, "username", None):
+        return f"@{user.username}"
+    name = getattr(user, "first_name", None) or "User"
+    return f'<a href="tg://user?id={user.id}">{name}</a>'
+
+
 # ── Command handlers ──────────────────────────────────────────
 
 async def _ensure_started(client: Client, message: Message) -> bool:
@@ -84,7 +94,7 @@ async def _start_jdleech(client: Client, message: Message, url: str):
         )
         return await message.reply_text(cap, parse_mode=enums.ParseMode.HTML)
 
-    tid      = tm.create_task(uid, url[:60])
+    tid      = tm.create_task(uid, url[:60], _mention(message.from_user))
     dest_dir = os.path.join(config.DOWNLOAD_DIR, tid)
 
     loop = asyncio.get_event_loop()
@@ -252,7 +262,7 @@ async def _start_tg_reply(client: Client, message: Message, replied, action: str
         )
         return await message.reply_text(cap, parse_mode=enums.ParseMode.HTML)
 
-    tid      = tm.create_task(uid, "tg_reply")
+    tid      = tm.create_task(uid, "tg_reply", _mention(message.from_user))
     dest_dir = os.path.join(config.DOWNLOAD_DIR, tid)
 
     loop      = asyncio.get_event_loop()
@@ -405,7 +415,7 @@ async def _start(client: Client, message: Message, url: str, action: str):
             )
         return await message.reply_text(_cap_text, parse_mode=enums.ParseMode.HTML)
 
-    tid      = tm.create_task(uid, url[:60])
+    tid      = tm.create_task(uid, url[:60], _mention(message.from_user))
     dest_dir = os.path.join(config.DOWNLOAD_DIR, tid)
 
     # Schedule as an asyncio.Task so cancel_task() can hard-cancel it
@@ -579,7 +589,7 @@ async def _start_torrent(client: Client, message: Message, url: str | None = Non
         return await message.reply_text(cap, parse_mode=enums.ParseMode.HTML)
 
     label    = (url or "torrent_file")[:60]
-    tid      = tm.create_task(uid, label)
+    tid      = tm.create_task(uid, label, _mention(message.from_user))
     dest_dir = os.path.join(config.DOWNLOAD_DIR, tid)
 
     loop = asyncio.get_event_loop()

@@ -50,10 +50,11 @@ def can_add_task(uid: int) -> tuple[bool, str]:
     return True, ""
 
 
-def create_task(uid: int, name: str = "") -> str:
+def create_task(uid: int, name: str = "", user_mention: str = "") -> str:
     tid = _new_id()
     _tasks[tid] = {
         "user_id":      uid,
+        "user_mention": user_mention,
         "status":       "queued",
         "name":         name,
         "cancel_event": asyncio.Event(),
@@ -70,6 +71,11 @@ def create_task(uid: int, name: str = "") -> str:
         },
     }
     return tid
+
+
+def get_user_mention(tid: str) -> str:
+    t = _tasks.get(tid)
+    return (t or {}).get("user_mention", "")
 
 
 def set_asyncio_task(tid: str, coro_task) -> None:

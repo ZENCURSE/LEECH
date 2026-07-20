@@ -560,6 +560,7 @@ async def upload_file(client, chat_id: int, file_path: str,
                     done=done, total=total, speed=speed, eta=eta,
                     elapsed=elapsed, tid=task_id,
                     parent_name=final_name, part_num=part_num, part_total=part_total,
+                    user_mention=tm.get_user_mention(task_id),
                 ),
                 task_kb(task_id),
             )
@@ -632,6 +633,7 @@ async def upload_file(client, chat_id: int, file_path: str,
                         parent_name=final_name if is_split else "",
                         part_num=parts.index(part) + 1 if is_split else 0,
                         part_total=len(parts) if is_split else 0,
+                        user_mention=tm.get_user_mention(_tid),
                     ),
                 )
 
