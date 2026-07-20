@@ -105,8 +105,10 @@ async def main():
         from pyrogram.types import BotCommand
         await app.set_bot_commands([
             BotCommand("start",    "👋 Start the bot"),
-            BotCommand("d",        "⬇️ Download / leech a URL"),
+            BotCommand("d",        "⬇️ Download / leech a direct URL"),
+            BotCommand("ytdl",     "🎬 Force yt-dlp (YouTube, HLS/M3U8)"),
             BotCommand("torrent",  "🌊 Download a magnet/.torrent link or file"),
+            BotCommand("td",       "🌊 Alias for /torrent"),
             BotCommand("jdleech",  "🔗 JD-style multi-host download"),
             BotCommand("status",   "📊 View your active tasks"),
             BotCommand("cancel",   "🚫 Cancel a task"),

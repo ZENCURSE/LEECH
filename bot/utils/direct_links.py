@@ -52,6 +52,36 @@ _M3U8_CT = re.compile(
     re.I,
 )
 
+# Any URL whose path ends in one of these is unambiguously a direct file —
+# route straight to the HTTP/aria2 downloader and never bother probing it.
+# This is what makes /d work for "all types of direct download links"
+# regardless of what a CDN's HEAD response looks like (many WAFs/CDNs,
+# including Cloudflare R2 public buckets, block or challenge HEAD requests
+# and return a text/html error page for a perfectly normal file).
+DIRECT_EXTS = {
+    # video
+    "mp4", "mkv", "avi", "mov", "wmv", "webm", "flv", "ts", "m4v",
+    "3gp", "3g2", "mpg", "mpeg", "ogv", "vob", "mts", "m2ts", "f4v",
+    # audio
+    "mp3", "m4a", "flac", "wav", "aac", "ogg", "wma", "opus", "alac", "m4b",
+    # archives
+    "zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "iso",
+    # documents / ebooks
+    "pdf", "epub", "mobi", "azw3", "azw", "docx", "doc", "pptx", "ppt",
+    "xlsx", "xls", "txt", "csv", "srt", "ass", "vtt", "sub",
+    # images
+    "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "svg",
+    # disk/exe/misc binaries
+    "exe", "msi", "dmg", "apk", "deb", "rpm", "bin", "img",
+}
+
+
+def _has_direct_ext(url: str) -> bool:
+    path = urlparse(url).path.lower()
+    last = path.rsplit("/", 1)[-1]
+    ext  = last.rsplit(".", 1)[-1] if "." in last else ""
+    return ext in DIRECT_EXTS
+
 
 async def resolve(url: str) -> dict:
     url = url.strip()
@@ -78,6 +108,16 @@ async def resolve(url: str) -> dict:
     if YTDLP_RE.search(url):
         return _r(url, ytdlp=True)
 
+    # ── Direct file link (known extension) → straight to HTTP ─
+    # Skip all probing entirely. This is the important fix: a link ending
+    # in .mkv/.mp4/.zip/etc IS the file — trusting a HEAD probe's
+    # Content-Type here is what misroutes CDN/WAF-protected direct links
+    # (e.g. Cloudflare R2 buckets that return a text/html block page for
+    # HEAD requests) into yt-dlp, which then fails since it's not a real
+    # webpage.
+    if _has_direct_ext(url):
+        return _r(url)
+
     # ── Known DDL hosters → resolve to direct URL ─────────────
     try:
         from bot.utils.direct_link_generator import generate_direct_link, is_supported
@@ -91,27 +131,54 @@ async def resolve(url: str) -> dict:
     except Exception:
         pass
 
-    # ── Unknown URL — sniff Content-Type ─────────────────────
+    # ── Unknown URL — sniff Content-Type ──────────────────────
+    # Try HEAD first (cheap), but don't trust it blindly: lots of CDNs and
+    # WAFs mishandle HEAD (403/503 + text/html challenge page) even though
+    # a real GET for the file works fine. If HEAD comes back non-2xx or the
+    # server disallows it, fall back to a tiny ranged GET before deciding.
+    ct, fu, ok = await _probe(url, "head")
+    if not ok:
+        ct, fu, ok = await _probe(url, "get")
+
+    if not ok:
+        # Couldn't get any clean signal at all — don't guess ytdlp, just
+        # hand it to the HTTP downloader; if the URL truly isn't a file,
+        # that will fail with a clear "not a file" error instead of a
+        # confusing yt-dlp "unsupported URL" error.
+        return _r(url)
+
+    if _M3U8_CT.search(ct):
+        return _r(fu, ytdlp=True)
+    if M3U8_RE.search(fu):
+        return _r(fu, ytdlp=True)
+    if _has_direct_ext(fu):
+        return _r(fu)
+    if "text/html" in ct:
+        return _r(fu, ytdlp=True)
+    return _r(fu)
+
+
+async def _probe(url: str, method: str) -> tuple[str, str, bool]:
+    """Returns (content_type, final_url, ok). ok is False on network error,
+    non-2xx status, or a disallowed method — signalling the caller should
+    not trust `ct` and should try another probe or just fall back to HTTP."""
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.head(
-                url, headers={"User-Agent": UA},
+            headers = {"User-Agent": UA}
+            if method == "get":
+                headers["Range"] = "bytes=0-1023"
+            req = session.head if method == "head" else session.get
+            async with req(
+                url, headers=headers,
                 allow_redirects=True, timeout=TIMEOUT,
             ) as resp:
-                ct = resp.headers.get("Content-Type", "").lower()
                 fu = str(resp.url)
-                # FIX: detect M3U8 by Content-Type (covers URLs like /stream?format=hls
-                # where there is no .m3u8 in the path)
-                if _M3U8_CT.search(ct):
-                    return _r(fu, ytdlp=True)
-                # Also re-check the final (possibly redirected) URL for M3U8 patterns
-                if M3U8_RE.search(fu):
-                    return _r(fu, ytdlp=True)
-                if "text/html" in ct:
-                    return _r(fu, ytdlp=True)
-                return _r(fu)
+                if resp.status >= 400:
+                    return "", fu, False
+                ct = resp.headers.get("Content-Type", "").lower()
+                return ct, fu, True
     except Exception:
-        return _r(url)   # fallback: try HTTP download
+        return "", url, False
 
 
 def _r(url, ytdlp=False, torrent=False, tg=False, jdleech=False, gdrive=False) -> dict:

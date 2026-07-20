@@ -521,6 +521,103 @@ async def _refresh_status_card(uid: int):
         _status_msgs.pop(uid, None)
 
 
+@Client.on_message(filters.command("ytdl") & (filters.private | filters.group))
+async def cmd_ytdl(client: Client, message: Message):
+    """
+    /ytdl — always forces the yt-dlp path (YouTube and other video
+    platforms, M3U8/HLS streams), regardless of how the link looks.
+    Use this when a link needs yt-dlp's extraction but wasn't
+    auto-detected, or to be explicit instead of relying on /d's guess.
+    Works two ways:
+      • /ytdl <url>
+      • reply to a message containing the url, then /ytdl
+    """
+    if not await auth_required(message):
+        return
+    if await _ensure_started(client, message):
+        return
+
+    replied = message.reply_to_message
+    url = None
+
+    parts = message.text.split(None, 1)
+    if len(parts) == 2 and re.match(r"https?://\S+", parts[1].strip()):
+        url = parts[1].strip()
+    elif replied and replied.text:
+        txt = replied.text.strip()
+        if re.match(r"https?://\S+", txt):
+            url = txt
+
+    if not url:
+        return await message.reply_text(
+            "❌ Usage:\n"
+            "• <code>/ytdl &lt;url&gt;</code> — force yt-dlp (YouTube, HLS/M3U8, etc.)\n"
+            "• Reply to a message with a link, then <code>/ytdl</code>",
+            parse_mode=enums.ParseMode.HTML,
+        )
+    await _start_ytdlp(client, message, url)
+
+
+async def _start_ytdlp(client: Client, message: Message, url: str):
+    uid = message.from_user.id
+    is_group = message.chat.type != enums.ChatType.PRIVATE
+
+    can, reason = tm.can_add_task(uid)
+    if not can:
+        cap = (
+            f"⚠️ The bot is at full capacity (<b>{config.TOTAL_TASKS}</b> active tasks).\n"
+            "Please wait for a slot to free up." if reason == "global" else
+            f"⚠️ You already have <b>{config.MAX_TASKS}</b> active tasks.\n"
+            "Use /status to check them or /cancel &lt;id&gt; to free a slot."
+        )
+        return await message.reply_text(cap, parse_mode=enums.ParseMode.HTML)
+
+    tid      = tm.create_task(uid, url[:60], _mention(message.from_user))
+    dest_dir = os.path.join(config.DOWNLOAD_DIR, tid)
+
+    loop = asyncio.get_event_loop()
+    coro_task = loop.create_task(_run_ytdlp(client, message, url, tid, dest_dir, uid, is_group))
+    tm.set_asyncio_task(tid, coro_task)
+
+
+async def _run_ytdlp(client, message, url, tid, dest_dir, uid, is_group):
+    await _send_or_update_status_card(uid, message)
+    msg = _status_msgs.get(uid)
+    if not msg:
+        msg = await message.reply_text(
+            f"⬇️ Fetching via yt-dlp…\n🆔 <code>{tid}</code>",
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=task_kb(tid),
+        )
+
+    start = time.monotonic()
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+        path = await ytdlp_download(url, dest_dir, tid, msg, uid)
+        await _post_download(client, message, msg, [path], dest_dir, tid, uid, "", start, is_group)
+    except asyncio.CancelledError:
+        tm.cancel_task(tid)
+        await _cancel_msg(msg, tid, uid=uid)
+    except Exception as e:
+        print(f"[{tid}] YTDLP ERROR:\n{traceback.format_exc()}")
+        await _error_msg(msg, tid, e, uid=uid)
+    finally:
+        tm.finish_task(tid)
+        _cleanup(dest_dir)
+        await _refresh_status_card(uid)
+        if not is_group:
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+
+
+@Client.on_message(filters.command("td") & (filters.private | filters.group))
+async def cmd_td(client: Client, message: Message):
+    """/td — short alias for /torrent. Forces the torrent/magnet backend."""
+    await cmd_torrent(client, message)
+
+
 @Client.on_message(filters.command("torrent") & (filters.private | filters.group))
 async def cmd_torrent(client: Client, message: Message):
     """
@@ -696,7 +793,19 @@ async def _run_start(client: Client, message: Message, url: str, action: str,
 
         elif info["use_ytdlp"]:
             await _edit(msg, tid, "⬇️ Fetching via yt-dlp...", uid, is_group)
-            path = await ytdlp_download(info["url"], dest_dir, tid, msg, uid)
+            from bot.utils.direct_links import YTDLP_RE, M3U8_RE
+            is_known_platform = bool(YTDLP_RE.search(info["url"]) or M3U8_RE.search(info["url"]))
+            try:
+                path = await ytdlp_download(info["url"], dest_dir, tid, msg, uid)
+            except Exception:
+                # yt-dlp was only a guess (content-type sniff), not a known
+                # video platform/m3u8 link — the URL is very likely just a
+                # plain file that a CDN/WAF made look like a webpage during
+                # probing. Retry it as a direct HTTP download before giving up.
+                if is_known_platform:
+                    raise
+                await _edit(msg, tid, "⬇️ Retrying as direct download...", uid, is_group)
+                path = await http_download(info["url"], dest_dir, tid, msg)
         else:
             await _edit(msg, tid, "⬇️ Downloading...", uid, is_group)
             path = await http_download(info["url"], dest_dir, tid, msg)
