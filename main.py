@@ -43,10 +43,27 @@ def _start_aria2():
         "--allow-overwrite=true",
         "--auto-file-renaming=false",
         f"--dir={config.DOWNLOAD_DIR}",
+        # ── Torrent/magnet peer discovery ────────────────────────
+        # Without these, magnets rely ENTIRELY on the trackers listed in
+        # the link — if those are slow, rate-limiting, or just down
+        # (extremely common for public trackers), the download hangs at
+        # 0 peers indefinitely with no error. DHT + PEX give aria2 a way
+        # to find peers independent of the trackers actually responding.
+        "--enable-dht=true",
+        "--enable-dht6=true",
+        "--dht-listen-port=6881-6999",
+        "--bt-enable-lpd=true",           # local peer discovery (same-LAN seedboxes)
+        "--enable-peer-exchange=true",    # once we have 1 peer, find more via them
+        "--bt-tracker-interval=60",
+        "--bt-tracker-timeout=15",
+        "--bt-tracker-connect-timeout=15",
+        "--bt-request-peer-speed-limit=0",
+        "--listen-port=6881-6999",
+        "--bt-max-peers=100",
     ]
     try:
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print("[aria2] Started (HTTP downloads only).")
+        print("[aria2] Started (HTTP downloads + torrents/magnets, DHT enabled).")
     except FileNotFoundError:
         print("[aria2] WARNING: aria2c not found.")
 

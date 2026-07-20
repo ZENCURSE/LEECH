@@ -58,6 +58,7 @@ async def _poll_until_done(gid: str, task_id: str, msg, dest_dir: str,
     kb        = task_kb(task_id)
     tm.set_status(task_id, "downloading")
     tm.set_gid(task_id, gid)
+    zero_peer_since = None
 
     while True:
         if tm.is_cancelled(task_id):
@@ -68,6 +69,7 @@ async def _poll_until_done(gid: str, task_id: str, msg, dest_dir: str,
             st = await ar2.tell_status(gid, [
                 "status", "totalLength", "completedLength", "downloadSpeed",
                 "files", "bittorrent", "errorMessage", "followedBy", "dir",
+                "connections", "numSeeders",
             ])
         except Exception:
             await asyncio.sleep(_POLL_SEC)
@@ -81,6 +83,7 @@ async def _poll_until_done(gid: str, task_id: str, msg, dest_dir: str,
         if status == "complete" and followed:
             gid = followed[0]
             tm.set_gid(task_id, gid)
+            zero_peer_since = None
             continue
 
         if status == "error":
@@ -91,6 +94,8 @@ async def _poll_until_done(gid: str, task_id: str, msg, dest_dir: str,
         speed = float(st.get("downloadSpeed") or 0)
         eta   = (total - done) / speed if speed > 0 and total > done else 0
         pct   = (done / total * 100) if total else 0
+        connections = int(st.get("connections") or 0)
+        seeders     = int(st.get("numSeeders") or 0)
 
         name = None
         bt = st.get("bittorrent") or {}
@@ -101,8 +106,30 @@ async def _poll_until_done(gid: str, task_id: str, msg, dest_dir: str,
             name = os.path.basename(fp) if fp else None
         name = name or label_prefix or "download"
 
+        # Zero peers for a while → almost certainly a dead/unseeded torrent
+        # or the trackers in the link aren't responding. Say so clearly
+        # instead of silently sitting at 0% with no explanation.
+        no_peers = connections == 0 and seeders == 0 and done == 0
+        if no_peers:
+            zero_peer_since = zero_peer_since or time.monotonic()
+        else:
+            zero_peer_since = None
+
+        stuck_secs = (time.monotonic() - zero_peer_since) if zero_peer_since else 0
+
         tm.update_progress(task_id, name=name, done=done, total=total,
                            speed=speed, eta=eta, status="downloading")
+
+        if stuck_secs > 60:
+            note = (
+                f"\n\n🔍 <b>No peers found yet</b> ({int(stuck_secs)}s) — this "
+                f"torrent may have no active seeders, or its trackers aren't "
+                f"responding. It'll keep trying, but if this continues the "
+                f"torrent is likely dead."
+            )
+        else:
+            note = ""
+
         await safe_edit(
             msg,
             build_progress_card(
@@ -110,7 +137,7 @@ async def _poll_until_done(gid: str, task_id: str, msg, dest_dir: str,
                 done=done, total=total, speed=speed, eta=eta,
                 elapsed=time.monotonic() - started, tid=task_id,
                 user_mention=tm.get_user_mention(task_id),
-            ),
+            ) + note,
             kb,
         )
 
