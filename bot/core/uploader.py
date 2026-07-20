@@ -330,6 +330,7 @@ async def _send_doc(client, chat_id, path, caption, thumb, cb):
     tw, th = await _get_thumb_dims(small) if small else (None, None)
     return await client.send_document(
         chat_id=chat_id, document=path, thumb=small,
+        file_name=os.path.basename(path),
         caption=caption, parse_mode=enums.ParseMode.HTML,
         disable_notification=True, progress=cb,
     )
@@ -399,7 +400,7 @@ async def _send(client, chat_id, path, caption, thumb, cb, as_doc, uid=0):
                 chat_id=chat_id, video=path, caption=caption,
                 parse_mode=enums.ParseMode.HTML, duration=duration or 0,
                 width=vw, height=vh,
-                thumb=small,
+                thumb=small, file_name=os.path.basename(path),
                 supports_streaming=True,
                 disable_notification=True, progress=cb,
             )
@@ -426,7 +427,8 @@ async def _send(client, chat_id, path, caption, thumb, cb, as_doc, uid=0):
                 parse_mode=enums.ParseMode.HTML, duration=duration or 0,
                 performer=artist or "",
                 title=title or os.path.splitext(os.path.basename(path))[0],
-                thumb=small, disable_notification=True, progress=cb,
+                thumb=small, file_name=os.path.basename(path),
+                disable_notification=True, progress=cb,
             )
         except (BadRequest, RPCError):
             return await _send_doc(client, chat_id, path, caption, small, cb)
