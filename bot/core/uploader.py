@@ -65,19 +65,26 @@ _INFO_TOKENS = frozenset({"size", "language", "time", "quality", "codec", "audio
 _TOKEN_RE    = re.compile(r"\{(\w+)\}")
 
 
-async def _split_file(path: str, part_size: int) -> list[str]:
-    """Split file into numbered parts. Removes the original after all parts are written."""
+async def _split_file(path: str, part_size: int, progress_cb=None) -> list[str]:
+    """
+    Split file into numbered parts. Removes the original after all parts
+    are written. If given, progress_cb(done, total, part_num, part_total,
+    part_name) is called periodically (roughly every CHUNK read) so the
+    caller can show a live progress bar instead of a static message.
+    """
     total = os.path.getsize(path)
     if total == 0:
         raise ValueError(f"Cannot split empty file: {path}")
     n    = math.ceil(total / part_size)
     base, ext = os.path.splitext(path)
     parts: list[str] = []
+    done = 0
 
     try:
         async with aiofiles.open(path, "rb") as src:
             for i in range(n):
                 pp   = f"{base}.part{i+1:02d}{ext}"
+                pp_name = os.path.basename(pp)
                 left = part_size
                 written = 0
                 async with aiofiles.open(pp, "wb") as dst:
@@ -88,6 +95,12 @@ async def _split_file(path: str, part_size: int) -> list[str]:
                         await dst.write(chunk)
                         left    -= len(chunk)
                         written += len(chunk)
+                        done    += len(chunk)
+                        if progress_cb:
+                            try:
+                                await progress_cb(done, total, i + 1, n, pp_name)
+                            except Exception:
+                                pass
                 if written == 0:
                     # Empty tail part — remove and stop
                     try: os.remove(pp)
@@ -523,8 +536,36 @@ async def upload_file(client, chat_id: int, file_path: str,
         except Exception:
             pass
 
+        _split_state = {"last_t": time.monotonic(), "last_b": 0, "started": time.monotonic()}
+        _split_upd_sec = getattr(config, "PROGRESS_UPDATE_SEC", 4)
+
+        async def _split_cb(done, total, part_num, part_total, part_name):
+            from bot.utils.progress import build_progress_card, safe_edit
+            now = time.monotonic()
+            dt  = now - _split_state["last_t"]
+            if dt < _split_upd_sec and done < total:
+                return
+            speed   = (done - _split_state["last_b"]) / dt if dt > 0 else 0.0
+            eta     = (total - done) / speed if speed > 0 else 0.0
+            elapsed = now - _split_state["started"]
+            _split_state["last_t"] = now
+            _split_state["last_b"] = done
+            tm.update_progress(task_id, name=part_name, done=done,
+                               total=total, speed=speed, eta=eta, status="splitting")
+            pct = (done / total * 100) if total else 0
+            await safe_edit(
+                msg,
+                build_progress_card(
+                    "splitting", part_name, pct,
+                    done=done, total=total, speed=speed, eta=eta,
+                    elapsed=elapsed, tid=task_id,
+                    parent_name=final_name, part_num=part_num, part_total=part_total,
+                ),
+                task_kb(task_id),
+            )
+
         try:
-            parts = await _split_file(file_path, split_size)
+            parts = await _split_file(file_path, split_size, progress_cb=_split_cb)
         except Exception as e:
             raise RuntimeError(f"Failed to split {final_name}: {e}") from e
     else:
@@ -588,6 +629,9 @@ async def upload_file(client, chat_id: int, file_path: str,
                         done=current, total=total,
                         speed=speed, eta=eta, elapsed=elapsed,
                         tid=_tid,
+                        parent_name=final_name if is_split else "",
+                        part_num=parts.index(part) + 1 if is_split else 0,
+                        part_total=len(parts) if is_split else 0,
                     ),
                 )
 

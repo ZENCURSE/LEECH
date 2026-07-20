@@ -24,10 +24,12 @@ def cancel_cmd(tid: str) -> str:
 _BAR_FILL = {
     "downloading": "🟦",
     "uploading":   "🟧",
+    "splitting":   "🟪",
 }
 _BAR_ACCENT = {
     "downloading": "🔷",
     "uploading":   "🔶",
+    "splitting":   "🔸",
 }
 
 def bar(pct: float, width: int = 10, fill: str = "🟩", accent: str = "") -> str:
@@ -74,6 +76,15 @@ def group_task_kb(uid: int) -> InlineKeyboardMarkup:
     ]])
 
 # ── Filename helper — HTML-escaped + wrapped in native blockquote ──
+def _esc(text: str) -> str:
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 def _fname(name: str) -> str:
     """
     Telegram blockquote for filenames — renders as a real quote bar
@@ -81,13 +92,7 @@ def _fname(name: str) -> str:
     HTML-escapes special chars so filenames with & < > don't break
     the message's HTML parsing.
     """
-    safe = (
-        str(name)
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
-    return f"<blockquote>🎬 {safe}</blockquote>"
+    return f"<blockquote>🎬 {_esc(name)}</blockquote>"
 
 # ── Shared helpers ────────────────────────────────────────────
 def _slots_line() -> str:
@@ -361,7 +366,7 @@ def status_message(tasks: dict) -> str:
 # ══════════════════════════════════════════════════════════════
 
 def build_progress_card(
-    status: str,        # "downloading" | "uploading" | "encoding" | "merging"
+    status: str,        # "downloading" | "uploading" | "splitting" | "encoding" | "merging"
     name: str,
     pct: float,         # 0–100
     *,
@@ -374,6 +379,12 @@ def build_progress_card(
     enc_speed: float = 0.0,   # ffmpeg speed multiplier
     elapsed: float   = 0.0,   # seconds
     tid: str = "",
+    # split-aware display: when a file has been split into parts, show the
+    # ORIGINAL filename up top and a curved arrow pointing at whichever
+    # part is currently being processed, so it's clear they're the same file
+    parent_name: str = "",
+    part_num: int = 0,
+    part_total: int = 0,
 ) -> str:
     """
     Single unified card renderer.
@@ -384,6 +395,7 @@ def build_progress_card(
     icons = {
         "downloading": ("⬇️",  "DOWNLOADING"),
         "uploading":   ("📤",  "UPLOADING"),
+        "splitting":   ("✂️",  "SPLITTING"),
         "encoding":    ("⚙️",  "ENCODING"),
         "merging":     ("🔗",  "MERGING"),
     }
@@ -391,17 +403,22 @@ def build_progress_card(
 
     bar_str = bar(pct, 10, fill=_BAR_FILL.get(status, "🟩"), accent=_BAR_ACCENT.get(status, ""))
 
+    if parent_name:
+        name_block = _fname(parent_name) + f"\n║  ↳ <code>{_esc(name)}</code>"
+    else:
+        name_block = _fname(name)
+
     lines = [
         f"╔═「 {icon} <b>{label}</b> 」",
         f"║",
-        _fname(name),
+        name_block,
         f"║",
         f"║  <code>{bar_str}</code>  <b>{pct:.1f}%</b>",
         f"║",
         f"╠═「 📊 <b>STATS</b> 」",
     ]
 
-    if status in ("downloading", "uploading"):
+    if status in ("downloading", "uploading", "splitting"):
         if total:
             lines.append(f"║  ➤ <b>Size</b>: <code>{human_size_pair(done, total)}</code>")
         if speed:
@@ -419,6 +436,8 @@ def build_progress_card(
         if eta:
             lines.append(f"║  ➤ <b>ETA</b>: <code>{human_time(int(eta))}</code>")
 
+    if part_total > 1:
+        lines.append(f"║  ➤ <b>Part</b>: <code>{part_num}/{part_total}</code>")
     if tid:
         lines.append(f"║  ➤ <b>Task</b>: <code>#{tid}</code>")
 
