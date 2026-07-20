@@ -8,7 +8,7 @@ from pyrogram import Client, filters, enums
 from pyrogram.types import CallbackQuery
 
 from bot.core import task_manager as tm
-from bot.utils.progress import downloading_card, uploading_card, task_kb, cancel_card, error_card
+from bot.utils.progress import build_progress_card, task_kb, cancel_card, error_card
 
 
 @Client.on_callback_query(filters.regex(r"^prog_refresh:"))
@@ -24,8 +24,15 @@ async def prog_refresh_cb(client: Client, cb: CallbackQuery):
         p.get("name", "..."), p.get("done", 0), p.get("total", 0),
         p.get("speed", 0.0), p.get("eta", 0.0),
     )
-    card = (uploading_card if task["status"] == "uploading"
-            else downloading_card)(name, done, tot, spd, eta, tid)
+    pct = (done / tot * 100) if tot else 0
+    card = build_progress_card(
+        task["status"], name, pct,
+        done=done, total=tot, speed=spd, eta=eta, tid=tid,
+        parent_name=p.get("parent_name", ""),
+        part_num=p.get("part_num", 0),
+        part_total=p.get("part_total", 0),
+        user_mention=tm.get_user_mention(tid),
+    )
     try:
         await cb.message.edit_text(card, reply_markup=task_kb(tid), parse_mode=enums.ParseMode.HTML)
         await cb.answer("🔄 Refreshed!")

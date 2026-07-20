@@ -51,6 +51,7 @@ def bar(pct: float, width: int = 10, fill: str = "🟩", accent: str = "") -> st
 _STYLE = {
     "downloading": ("⬇️",  "DOWNLOADING"),
     "uploading":   ("📤",  "UPLOADING"),
+    "splitting":   ("✂️",  "SPLITTING"),
     "processing":  ("⚙️",  "PROCESSING"),
     "queued":      ("🕐",  "QUEUED"),
     "cancelled":   ("🚫",  "CANCELLED"),
@@ -293,14 +294,23 @@ def _task_block(num: int, tid: str, task: dict) -> str:
     pct   = (done / total * 100) if total else 0
     user_mention = task.get("user_mention", "")
 
+    parent_name = p.get("parent_name", "")
+    part_num    = p.get("part_num", 0)
+    part_total  = p.get("part_total", 0)
+
+    if parent_name:
+        name_block = _fname(parent_name) + f"\n│  ↳ <code>{_esc(name)}</code>"
+    else:
+        name_block = _fname(name)
+
     lines = [
         f"┌─ <b>{num}.</b> {icon}  <b>{label}</b>  ·  <code>{tid}</code>",
         f"│",
-        _fname(name),
+        name_block,
         f"│",
     ]
 
-    if status in ("downloading", "uploading"):
+    if status in ("downloading", "uploading", "splitting"):
         lines += [
             f"│  <code>{bar(pct, 10, fill=_BAR_FILL.get(status, '🟩'), accent=_BAR_ACCENT.get(status, ''))}</code>  ▸ <b>{pct:.0f}%</b>",
             f"│",
@@ -313,8 +323,12 @@ def _task_block(num: int, tid: str, task: dict) -> str:
     elif status == "processing":
         lines.append(f"│  ➤ ⚙️ Processing…")
 
+    if part_total > 1:
+        lines.append(f"│  ➤ <b>Part</b>: <code>{part_num}/{part_total}</code>")
     if user_mention:
         lines.append(f"│  ➤ <b>User</b>: {user_mention}")
+    if status == "splitting" and part_total > 1:
+        lines.append(f"│  <i>ℹ️ Sent as Document — split media isn't playable</i>")
 
     lines += [
         f"│",

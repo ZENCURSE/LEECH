@@ -507,6 +507,7 @@ async def upload_file(client, chat_id: int, file_path: str,
     if file_size > split_size:
         n_parts = math.ceil(file_size / split_size)
         limit   = "4 GB" if split_size == _4GB else "2 GB"
+        tm.set_status(task_id, "splitting")
 
         # Splitting needs roughly another file_size worth of free disk
         # space (parts are written before the original is removed) —
@@ -551,7 +552,8 @@ async def upload_file(client, chat_id: int, file_path: str,
             _split_state["last_t"] = now
             _split_state["last_b"] = done
             tm.update_progress(task_id, name=part_name, done=done,
-                               total=total, speed=speed, eta=eta, status="splitting")
+                               total=total, speed=speed, eta=eta, status="splitting",
+                               parent_name=final_name, part_num=part_num, part_total=part_total)
             pct = (done / total * 100) if total else 0
             await safe_edit(
                 msg,
@@ -599,16 +601,20 @@ async def upload_file(client, chat_id: int, file_path: str,
 
         part_name = os.path.basename(part)
         part_size = os.path.getsize(part)
+        _part_num = parts.index(part) + 1 if is_split else 0
+        _part_total = len(parts) if is_split else 0
 
         tm.update_progress(task_id, name=part_name, done=0,
-                           total=part_size, speed=0.0, eta=0.0, status="uploading")
+                           total=part_size, speed=0.0, eta=0.0, status="uploading",
+                           parent_name=final_name if is_split else "",
+                           part_num=_part_num, part_total=_part_total)
 
         _state   = {"last_t": time.monotonic(), "last_b": 0, "started": time.monotonic()}
         _upd_sec = getattr(config, "PROGRESS_UPDATE_SEC", 4)
 
         async def _cb(current, total,
                       _pn=part_name, _tid=task_id, _st=_state,
-                      _pmsg=progress_msg):
+                      _pmsg=progress_msg, _pnum=_part_num, _ptot=_part_total):
             from bot.utils.progress import build_progress_card, safe_edit
             now     = time.monotonic()
             dt      = now - _st["last_t"]
@@ -620,7 +626,9 @@ async def upload_file(client, chat_id: int, file_path: str,
             _st["last_t"] = now
             _st["last_b"] = current
             tm.update_progress(_tid, name=_pn, done=current,
-                               total=total, speed=speed, eta=eta, status="uploading")
+                               total=total, speed=speed, eta=eta, status="uploading",
+                               parent_name=final_name if is_split else "",
+                               part_num=_pnum, part_total=_ptot)
             if _pmsg:
                 pct = (current / total * 100) if total else 0
                 await safe_edit(
@@ -631,8 +639,7 @@ async def upload_file(client, chat_id: int, file_path: str,
                         speed=speed, eta=eta, elapsed=elapsed,
                         tid=_tid,
                         parent_name=final_name if is_split else "",
-                        part_num=parts.index(part) + 1 if is_split else 0,
-                        part_total=len(parts) if is_split else 0,
+                        part_num=_pnum, part_total=_ptot,
                         user_mention=tm.get_user_mention(_tid),
                     ),
                 )
