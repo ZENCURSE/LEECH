@@ -114,7 +114,7 @@ def _total_speed() -> float:
 # ══════════════════════════════════════════════════════════════
 def _active_card(status: str, name: str, done: int, total: int,
                  speed: float, eta: float, tid: str,
-                 started: float = 0.0) -> str:
+                 started: float = 0.0, user_mention: str = "") -> str:
     icon, label = _STYLE.get(status, ("⚙️", status.upper()))
     pct     = (done / total * 100) if total else 0
     elapsed = time.time() - started if started else 0.0
@@ -133,6 +133,11 @@ def _active_card(status: str, name: str, done: int, total: int,
     ]
     if elapsed > 2:
         lines.append(f"║  ➤ <b>Time</b>: <code>{human_time(elapsed)}</code>")
+    if not user_mention:
+        from bot.core import task_manager as tm
+        user_mention = tm.get_user_mention(tid)
+    if user_mention:
+        lines.append(f"║  ➤ <b>User</b>: {user_mention}")
     lines += [
         f"║  ➤ <b>Task</b>: <code>#{tid}</code>",
         f"╚══════════════════════",
@@ -141,11 +146,11 @@ def _active_card(status: str, name: str, done: int, total: int,
     ]
     return "\n".join(lines)
 
-def downloading_card(name, done, total, speed, eta, tid, started=0.0):
-    return _active_card("downloading", name, done, total, speed, eta, tid, started)
+def downloading_card(name, done, total, speed, eta, tid, started=0.0, user_mention=""):
+    return _active_card("downloading", name, done, total, speed, eta, tid, started, user_mention)
 
-def uploading_card(name, done, total, speed, eta, tid, started=0.0):
-    return _active_card("uploading",   name, done, total, speed, eta, tid, started)
+def uploading_card(name, done, total, speed, eta, tid, started=0.0, user_mention=""):
+    return _active_card("uploading",   name, done, total, speed, eta, tid, started, user_mention)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -286,6 +291,7 @@ def _task_block(num: int, tid: str, task: dict) -> str:
     speed = p.get("speed", 0.0)
     eta   = p.get("eta",   0.0)
     pct   = (done / total * 100) if total else 0
+    user_mention = task.get("user_mention", "")
 
     lines = [
         f"┌─ <b>{num}.</b> {icon}  <b>{label}</b>  ·  <code>{tid}</code>",
@@ -306,6 +312,9 @@ def _task_block(num: int, tid: str, task: dict) -> str:
         lines.append(f"│  ➤ 🕐 Waiting in queue…")
     elif status == "processing":
         lines.append(f"│  ➤ ⚙️ Processing…")
+
+    if user_mention:
+        lines.append(f"│  ➤ <b>User</b>: {user_mention}")
 
     lines += [
         f"│",
