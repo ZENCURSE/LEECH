@@ -843,6 +843,23 @@ async def _refresh_group_card(uid: int):
 # ── Post-download: upload to user PM (in groups) ─────────────
 
 async def _post_download(client, message, msg, paths, dest_dir, tid, uid, action, start, is_group):
+    # Expand any directory results (a downloaded GDrive folder, or a
+    # multi-file torrent where _find_result returns the whole dest_dir)
+    # into the actual files inside it — otherwise a bare directory path
+    # gets silently skipped below and the task fails with "No files to
+    # upload" even though the download itself succeeded.
+    expanded: list[str] = []
+    for p in paths:
+        if os.path.isdir(p):
+            for root, _, fs in os.walk(p):
+                for f in fs:
+                    if f.endswith((".aria2", ".!qB", ".parts", ".fastresume")):
+                        continue
+                    expanded.append(os.path.join(root, f))
+        else:
+            expanded.append(p)
+    paths = expanded
+
     final: list[str] = []
     for path in paths:
         if not os.path.isfile(path):

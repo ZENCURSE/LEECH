@@ -259,16 +259,37 @@ async def _download_with_gdown(url, file_id, dest_dir, task_id, msg, uid):
         LOGGER.info(f"[GDrive] ✅ Folder downloaded to {out_path}")
         return out_path
     else:
-        # Try gdown first
+        # Try gdown first — run it in the background while we poll the
+        # output file's size to show live progress (gdown itself only
+        # prints a tqdm bar to stdout, nothing we can hook into directly)
         direct_url = f"https://drive.google.com/uc?id={file_id}&export=download"
         out_path   = os.path.join(dest_dir, f"gdrive_{file_id}")
         result = None
-        try:
-            result = await loop.run_in_executor(
-                None,
-                lambda: gdown.download(direct_url, output=out_path, quiet=False, fuzzy=True)
+        gdown_error = None
+
+        def _run_gdown():
+            return gdown.download(direct_url, output=out_path, quiet=True, fuzzy=True)
+
+        task = loop.run_in_executor(None, _run_gdown)
+        start = time.time()
+        while not task.done():
+            await asyncio.sleep(2)
+            size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
+            tm.update_progress(task_id, name=os.path.basename(out_path), done=size,
+                               total=0, status="downloading")
+            await safe_edit(
+                msg,
+                build_progress_card(
+                    "downloading", os.path.basename(out_path), 0,
+                    done=size, total=0, elapsed=time.time() - start,
+                    tid=task_id, user_mention=tm.get_user_mention(task_id),
+                ),
+                task_kb(task_id),
             )
+        try:
+            result = task.result()
         except Exception as e:
+            gdown_error = e
             LOGGER.warning(f"[GDrive] gdown failed: {e} — trying yt-dlp")
 
         if result and os.path.exists(result):
@@ -279,7 +300,33 @@ async def _download_with_gdown(url, file_id, dest_dir, task_id, msg, uid):
         LOGGER.info("[GDrive] Falling back to yt-dlp…")
         await safe_edit(msg, _card(task_id, "⬇️ Retrying via yt-dlp…"))
         from bot.downloaders.ytdlp_downloader import ytdlp_download
-        return await ytdlp_download(url, dest_dir, task_id, msg, uid)
+        try:
+            return await ytdlp_download(url, dest_dir, task_id, msg, uid)
+        except Exception as ytdlp_error:
+            # Both methods failed — translate the most common real-world
+            # Google Drive failure modes into a clear message instead of
+            # surfacing a raw library exception
+            combined = f"{gdown_error}\n{ytdlp_error}".lower()
+            if "quota" in combined or "too many users" in combined:
+                raise RuntimeError(
+                    "Google Drive has rate-limited this file — it's been "
+                    "downloaded too many times today by other users "
+                    "(Drive's per-file daily quota). This isn't something "
+                    "the bot can bypass; try again in a few hours, or ask "
+                    "the file owner for a fresh copy."
+                ) from ytdlp_error
+            if "permission" in combined or "access" in combined and "denied" in combined:
+                raise RuntimeError(
+                    "This file isn't publicly accessible — the owner needs "
+                    "to set sharing to \"Anyone with the link\" before the "
+                    "bot can download it."
+                ) from ytdlp_error
+            if "cannot retrieve" in combined or "does not exist" in combined:
+                raise RuntimeError(
+                    "Google Drive couldn't find this file — the link may "
+                    "be broken, or the file was deleted/moved."
+                ) from ytdlp_error
+            raise
 
 
 # ── Progress card ─────────────────────────────────────────────
