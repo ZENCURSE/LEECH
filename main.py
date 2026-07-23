@@ -106,7 +106,7 @@ async def main():
             BotCommand("start",    "👋 Start the bot"),
             BotCommand("d",        "⬇️ Download / leech a direct URL"),
             BotCommand("ytdl",     "🎬 Force yt-dlp (YouTube, HLS/M3U8)"),
-            BotCommand("torrent",  "🌊 Download a magnet/.torrent link or file"),
+            BotCommand("torrent",  "🌊 Download a magnet/.torrent link or file (shortcut: /td)"),
             BotCommand("jdleech",  "🔗 JD-style multi-host download"),
             BotCommand("status",   "📊 View your active tasks"),
             BotCommand("cancel",   "🚫 Cancel a task"),
