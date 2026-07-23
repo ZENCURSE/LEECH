@@ -176,6 +176,22 @@ def mark_started(uid):
         if uid not in db["started"]:
             db["started"].append(uid); _jsave(db)
 
+def get_all_started_users() -> list:
+    """All user IDs who have ever /start'd the bot — used for /broadcast."""
+    _ensure()
+    return list(_started or set())
+
+def remove_started(uid):
+    """Drop a user who permanently blocked the bot, so future broadcasts
+    don't keep wasting a send attempt on them."""
+    _ensure()
+    _started.discard(uid)
+    if USE_MONGO: _fire(_col_s.delete_one({"_id": uid}))
+    else:
+        db = _jload()
+        if uid in db.get("started", []):
+            db["started"].remove(uid); _jsave(db)
+
 # ── settings ──────────────────────────────────────────────────
 def get_settings(uid):
     if uid in _settings: return dict(_settings[uid])

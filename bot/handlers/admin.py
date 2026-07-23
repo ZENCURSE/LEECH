@@ -1,9 +1,12 @@
 """
 Admin panel — NXT HUB v5
-Commands: /admin  /addowner  /removeowner  /addadmin  /removeadmin  /listusers
+Commands: /admin  /addowner  /removeowner  /addadmin  /removeadmin  /listusers  /broadcast
 """
+import asyncio
+import time
 from pyrogram import Client, filters, enums
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.errors import FloodWait
 from bot.database import users_db
 import config
 
@@ -237,5 +240,122 @@ async def cmd_list_users(client: Client, message: Message):
         f"👥 <b>User List</b>\n{_DIV}\n\n"
         f"<b>Owners ({len(data['owners'])})</b>\n{owners}\n\n"
         f"<b>Admins ({len(data['admins'])})</b>\n{admins}",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+# ══════════════════════════════════════════════════════════════
+#  BROADCAST
+# ══════════════════════════════════════════════════════════════
+_pending_broadcast: dict[int, tuple[int, int]] = {}   # admin_uid -> (from_chat_id, message_id)
+
+
+@Client.on_message(filters.command("broadcast") & (filters.private | filters.group))
+async def cmd_broadcast(client: Client, message: Message):
+    uid = message.from_user.id if message.from_user else None
+    if not uid or not users_db.is_admin(uid):
+        return await message.reply_text("❌ Only admins/owners can use this.")
+
+    src = message.reply_to_message
+    text_arg = message.text.split(None, 1)
+    if not src and len(text_arg) < 2:
+        return await message.reply_text(
+            "📢 <b>Broadcast</b>\n"
+            "Reply to any message (text, photo, video, document…) with "
+            "<code>/broadcast</code>, or send <code>/broadcast &lt;text&gt;</code>.\n\n"
+            "It'll be copied — with formatting/media intact — to every user "
+            "who has started the bot.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+
+    total = len(users_db.get_all_started_users())
+    if total == 0:
+        return await message.reply_text("⚠️ No users to broadcast to yet.")
+
+    if src:
+        _pending_broadcast[uid] = (src.chat.id, src.id)
+    else:
+        # Plain text with no reply — send it to ourselves privately first
+        # so we have a message to copy from (preserves the same code path)
+        sent = await client.send_message(uid, text_arg[1])
+        _pending_broadcast[uid] = (sent.chat.id, sent.id)
+
+    await message.reply_text(
+        f"📢 <b>Broadcast to {total} user{'s' if total != 1 else ''}?</b>\n\n"
+        f"This sends immediately once confirmed — there's no undo.",
+        parse_mode=enums.ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Confirm", callback_data="bcast_go"),
+            InlineKeyboardButton("❌ Cancel",  callback_data="bcast_no"),
+        ]]),
+    )
+
+
+@Client.on_callback_query(filters.regex(r"^bcast_(go|no)$"))
+async def broadcast_cb(client: Client, cb):
+    uid = cb.from_user.id
+    if not users_db.is_admin(uid):
+        return await cb.answer("❌ Not authorized.", show_alert=True)
+
+    pending = _pending_broadcast.get(uid)
+    if not pending:
+        return await cb.answer("⚠️ Nothing pending — start over with /broadcast.", show_alert=True)
+
+    if cb.data == "bcast_no":
+        _pending_broadcast.pop(uid, None)
+        await cb.answer("Cancelled.")
+        return await cb.message.edit_text("❌ Broadcast cancelled.")
+
+    _pending_broadcast.pop(uid, None)
+    from_chat_id, message_id = pending
+    users = users_db.get_all_started_users()
+    total = len(users)
+    await cb.answer("Starting…")
+
+    sent = failed = 0
+    start = time.monotonic()
+    last_edit = 0.0
+
+    for i, target_uid in enumerate(users, 1):
+        try:
+            await client.copy_message(target_uid, from_chat_id, message_id)
+            sent += 1
+        except FloodWait as e:
+            await asyncio.sleep(e.value + 1)
+            try:
+                await client.copy_message(target_uid, from_chat_id, message_id)
+                sent += 1
+            except Exception:
+                failed += 1
+        except Exception as e:
+            failed += 1
+            # Permanently gone (blocked the bot, deleted account, etc.) —
+            # drop them so future broadcasts don't waste a send on them
+            err = type(e).__name__
+            if any(k in err for k in ("UserIsBlocked", "InputUserDeactivated",
+                                       "UserDeactivated", "PeerIdInvalid")):
+                users_db.remove_started(target_uid)
+
+        now = time.monotonic()
+        if now - last_edit > 3 or i == total:
+            last_edit = now
+            pct = i / total * 100
+            try:
+                await cb.message.edit_text(
+                    f"📢 <b>Broadcasting…</b>\n\n"
+                    f"「{'🟩' * int(pct // 10)}{'⬜' * (10 - int(pct // 10))}」  {pct:.0f}%\n\n"
+                    f"✅ Sent: <b>{sent}</b>   ❌ Failed: <b>{failed}</b>   "
+                    f"👥 Total: <b>{total}</b>",
+                    parse_mode=enums.ParseMode.HTML,
+                )
+            except Exception:
+                pass
+        await asyncio.sleep(0.05)   # gentle pacing, well under Telegram's rate limits
+
+    elapsed = time.monotonic() - start
+    await cb.message.edit_text(
+        f"✅ <b>Broadcast complete</b>\n\n"
+        f"Sent: <b>{sent}</b>   Failed: <b>{failed}</b>   "
+        f"Time: <b>{elapsed:.0f}s</b>",
         parse_mode=enums.ParseMode.HTML,
     )
