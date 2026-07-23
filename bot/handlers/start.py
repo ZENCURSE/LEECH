@@ -67,7 +67,6 @@ HELP_TEXT = (
     "<code>/jdleech &lt;url&gt;</code>   — multi-host direct links\n"
     "<code>/ytdl &lt;url&gt;</code>      — force yt-dlp (YouTube, HLS/M3U8)\n"
     "<code>/torrent &lt;link&gt;</code>  — magnet/.torrent link or file\n"
-    "<code>/td &lt;link&gt;</code>       — alias for /torrent\n"
     "<i>Or just paste a link directly.</i>\n\n"
     "<b>Sources:</b> YouTube · Mega.nz · MediaFire · GoFile\n"
     "TeraBox · OneDrive · Torrent/Magnet · 1000+ via yt-dlp\n\n"
