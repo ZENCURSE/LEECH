@@ -109,10 +109,131 @@ async def gdrive_download(
 
     if service:
         return await _download_with_api(service, file_id, dest_dir, task_id, msg, uid)
-    else:
-        # No credentials — use yt-dlp for public files, or gdown for files/folders
-        LOGGER.info("[GDrive] No credentials — using gdown fallback")
+
+    if is_gdrive_folder(url):
+        # Folder listing needs the Drive API's file list — gdown handles
+        # this fine without credentials for public folders
         return await _download_with_gdown(url, file_id, dest_dir, task_id, msg, uid)
+
+    # Single file, no service account: try a direct, manual download first.
+    # NOTE: this deliberately does NOT fall back to yt-dlp. yt-dlp's
+    # GoogleDrive extractor is unreliable — frequent "Unable to download
+    # JSON metadata: HTTP Error 4xx" failures, needs cookies for many
+    # files, breaks whenever Google tweaks the page (see yt-dlp issues
+    # #8976, #9301, #14592, #15945). It was a weak fallback, not a real
+    # fix. gdown is purpose-built for Drive and handles the confirm-token
+    # dance more robustly, so it's the fallback instead.
+    try:
+        return await _download_direct(file_id, dest_dir, task_id, msg)
+    except _GDriveBlocked:
+        raise
+    except Exception as e:
+        LOGGER.warning(f"[GDrive] Direct download failed: {e} — trying gdown")
+        return await _download_with_gdown(url, file_id, dest_dir, task_id, msg, uid)
+
+
+class _GDriveBlocked(RuntimeError):
+    """Raised for errors that no retry/fallback can fix (quota, permissions)."""
+
+
+async def _download_direct(file_id: str, dest_dir: str, task_id: str, msg) -> str:
+    """
+    Manual Google Drive download via the public uc?export=download flow,
+    handling the large-file virus-scan confirmation page ourselves.
+    Gives full control over error detection (quota/permission) instead of
+    surfacing an opaque library exception.
+    """
+    import re as _re
+    ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
+    base_url = "https://drive.google.com/uc"
+    params   = {"id": file_id, "export": "download"}
+    timeout  = aiohttp.ClientTimeout(total=None, connect=20, sock_connect=20)
+
+    async with aiohttp.ClientSession(headers={"User-Agent": ua}) as session:
+        async with session.get(base_url, params=params, timeout=timeout) as r:
+            ctype = r.headers.get("Content-Type", "")
+            if "text/html" not in ctype:
+                return await _stream_gdrive_response(r, dest_dir, task_id, msg)
+            html = await r.text()
+
+        low = html.lower()
+        if "quota exceeded" in low or "too many users have viewed" in low:
+            raise _GDriveBlocked(
+                "Google Drive has rate-limited this file — it's been "
+                "downloaded too many times today by other users (Drive's "
+                "per-file daily quota). This isn't something the bot can "
+                "bypass; try again in a few hours, or ask the file owner "
+                "for a fresh copy."
+            )
+        if "you need permission" in low or "request access" in low:
+            raise _GDriveBlocked(
+                "This file isn't publicly accessible — the owner needs to "
+                "set sharing to \"Anyone with the link\" before the bot "
+                "can download it."
+            )
+        if "file not found" in low or "does not exist" in low:
+            raise _GDriveBlocked(
+                "Google Drive couldn't find this file — the link may be "
+                "broken, or the file was deleted/moved."
+            )
+
+        # Large-file virus-scan warning page — extract the confirm token
+        m = (_re.search(r'confirm=([0-9A-Za-z_-]+)', html) or
+             _re.search(r'name="confirm"\s+value="([0-9A-Za-z_-]+)"', html))
+        params["confirm"] = m.group(1) if m else "t"   # "t" = generic bypass
+
+        async with session.get(base_url, params=params, timeout=timeout) as r2:
+            ctype2 = r2.headers.get("Content-Type", "")
+            if "text/html" in ctype2:
+                raise RuntimeError(
+                    "Google Drive returned a webpage instead of the file "
+                    "after the confirmation step — the file may need "
+                    "sign-in, or Drive changed its confirmation flow."
+                )
+            return await _stream_gdrive_response(r2, dest_dir, task_id, msg)
+
+
+async def _stream_gdrive_response(r, dest_dir: str, task_id: str, msg) -> str:
+    """Stream an aiohttp response to disk with live progress."""
+    import re as _re
+    cd = r.headers.get("Content-Disposition", "")
+    m  = _re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', cd)
+    name = m.group(1) if m else f"gdrive_{int(time.time())}"
+    out_path = os.path.join(dest_dir, name)
+    total = int(r.headers.get("Content-Length", 0))
+
+    tm.update_progress(task_id, name=name, done=0, total=total, status="downloading")
+    start = time.time()
+    last_edit = 0.0
+    done = 0
+
+    async with aiofiles.open(out_path, "wb") as f:
+        async for chunk in r.content.iter_chunked(CHUNK_SIZE):
+            await f.write(chunk)
+            done += len(chunk)
+            now = time.time()
+            if now - last_edit > 3:
+                last_edit = now
+                speed = done / (now - start) if now > start else 0
+                pct   = (done / total * 100) if total else 0
+                tm.update_progress(task_id, name=name, done=done, total=total,
+                                   speed=speed, status="downloading")
+                await safe_edit(
+                    msg,
+                    build_progress_card(
+                        "downloading", name, pct,
+                        done=done, total=total, speed=speed,
+                        elapsed=now - start, tid=task_id,
+                        user_mention=tm.get_user_mention(task_id),
+                    ),
+                    task_kb(task_id),
+                )
+
+    if done == 0:
+        raise FileNotFoundError("Google Drive sent an empty response.")
+    LOGGER.info(f"[GDrive] ✅ Downloaded via direct: {out_path} ({done} bytes)")
+    return out_path
 
 
 # ── API-based download (authenticated) ───────────────────────
@@ -290,43 +411,36 @@ async def _download_with_gdown(url, file_id, dest_dir, task_id, msg, uid):
             result = task.result()
         except Exception as e:
             gdown_error = e
-            LOGGER.warning(f"[GDrive] gdown failed: {e} — trying yt-dlp")
+            LOGGER.warning(f"[GDrive] gdown failed: {e}")
 
         if result and os.path.exists(result):
             LOGGER.info(f"[GDrive] ✅ Downloaded via gdown: {result}")
             return result
 
-        # Fallback: yt-dlp (handles quota/warning pages better)
-        LOGGER.info("[GDrive] Falling back to yt-dlp…")
-        await safe_edit(msg, _card(task_id, "⬇️ Retrying via yt-dlp…"))
-        from bot.downloaders.ytdlp_downloader import ytdlp_download
-        try:
-            return await ytdlp_download(url, dest_dir, task_id, msg, uid)
-        except Exception as ytdlp_error:
-            # Both methods failed — translate the most common real-world
-            # Google Drive failure modes into a clear message instead of
-            # surfacing a raw library exception
-            combined = f"{gdown_error}\n{ytdlp_error}".lower()
-            if "quota" in combined or "too many users" in combined:
-                raise RuntimeError(
-                    "Google Drive has rate-limited this file — it's been "
-                    "downloaded too many times today by other users "
-                    "(Drive's per-file daily quota). This isn't something "
-                    "the bot can bypass; try again in a few hours, or ask "
-                    "the file owner for a fresh copy."
-                ) from ytdlp_error
-            if "permission" in combined or "access" in combined and "denied" in combined:
-                raise RuntimeError(
-                    "This file isn't publicly accessible — the owner needs "
-                    "to set sharing to \"Anyone with the link\" before the "
-                    "bot can download it."
-                ) from ytdlp_error
-            if "cannot retrieve" in combined or "does not exist" in combined:
-                raise RuntimeError(
-                    "Google Drive couldn't find this file — the link may "
-                    "be broken, or the file was deleted/moved."
-                ) from ytdlp_error
-            raise
+        # Both the direct download and gdown failed — translate the
+        # common real-world Drive failure modes into a clear message
+        # instead of surfacing a raw library exception
+        combined = str(gdown_error or "").lower()
+        if "quota" in combined or "too many users" in combined:
+            raise RuntimeError(
+                "Google Drive has rate-limited this file — it's been "
+                "downloaded too many times today by other users "
+                "(Drive's per-file daily quota). This isn't something "
+                "the bot can bypass; try again in a few hours, or ask "
+                "the file owner for a fresh copy."
+            ) from gdown_error
+        if "permission" in combined or ("access" in combined and "denied" in combined):
+            raise RuntimeError(
+                "This file isn't publicly accessible — the owner needs "
+                "to set sharing to \"Anyone with the link\" before the "
+                "bot can download it."
+            ) from gdown_error
+        if "cannot retrieve" in combined or "does not exist" in combined:
+            raise RuntimeError(
+                "Google Drive couldn't find this file — the link may "
+                "be broken, or the file was deleted/moved."
+            ) from gdown_error
+        raise gdown_error or RuntimeError("Google Drive download failed for an unknown reason.")
 
 
 # ── Progress card ─────────────────────────────────────────────

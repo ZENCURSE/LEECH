@@ -50,7 +50,6 @@ def _start_aria2():
         # 0 peers indefinitely with no error. DHT + PEX give aria2 a way
         # to find peers independent of the trackers actually responding.
         "--enable-dht=true",
-        "--enable-dht6=true",
         "--dht-listen-port=6881-6999",
         "--bt-enable-lpd=true",           # local peer discovery (same-LAN seedboxes)
         "--enable-peer-exchange=true",    # once we have 1 peer, find more via them
