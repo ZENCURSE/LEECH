@@ -24,6 +24,32 @@ UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 )
 
+# Supplementary trackers appended to every magnet/torrent add. The trackers
+# baked into a magnet link are often slow, overloaded, or just dead — and
+# cold-starting DHT (no peers known yet) can take a while on its own. A big
+# list of independently-known-reliable trackers means metadata/peers are
+# usually found within seconds instead of waiting on DHT bootstrap alone.
+_EXTRA_TRACKERS = ",".join([
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://open.stealth.si:80/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://exodus.desync.com:6969/announce",
+    "udp://explodie.org:6969/announce",
+    "udp://tracker-udp.gbitt.info:80/announce",
+    "udp://open.demonii.com:1337/announce",
+    "udp://tracker.dler.org:6969/announce",
+    "udp://opentracker.i2p.rocks:6969/announce",
+    "udp://tracker.bittor.pw:1337/announce",
+    "udp://retracker.lanta-net.ru:2710/announce",
+    "udp://tracker.tiny-vps.com:6969/announce",
+    "udp://public.publictracker.xyz:1337/announce",
+    "http://tracker.openbittorrent.com:80/announce",
+    "http://tracker.opentrackr.org:1337/announce",
+    "udp://9.rarbg.com:2810/announce",
+    "udp://tracker.cyberia.is:6969/announce",
+    "udp://tracker.internetwarriors.net:1337/announce",
+])
+
 _POLL_SEC   = 2
 _TIMEOUT_S  = 4 * 3600  # 4h ceiling, same as the old qBittorrent path
 
@@ -104,6 +130,12 @@ async def _poll_until_done(gid: str, task_id: str, msg, dest_dir: str,
         elif st.get("files"):
             fp = st["files"][0].get("path", "")
             name = os.path.basename(fp) if fp else None
+        resolving_metadata = bool(name and name.startswith("[METADATA]"))
+        if resolving_metadata:
+            # aria2's internal placeholder before the real torrent metadata
+            # arrives — strip it so users see a clean name instead of raw
+            # internal notation
+            name = name[len("[METADATA]"):].strip() or "torrent"
         name = name or label_prefix or "download"
 
         # Zero peers for a while → almost certainly a dead/unseeded torrent
@@ -120,7 +152,14 @@ async def _poll_until_done(gid: str, task_id: str, msg, dest_dir: str,
         tm.update_progress(task_id, name=name, done=done, total=total,
                            speed=speed, eta=eta, status="downloading")
 
-        if stuck_secs > 60:
+        if resolving_metadata and stuck_secs > 20:
+            note = (
+                f"\n\n🔍 <b>Resolving torrent metadata…</b> ({int(stuck_secs)}s) — "
+                f"normal for the first 10-30s while peers/trackers respond. "
+                f"Taking longer usually means the torrent has few active "
+                f"peers right now."
+            )
+        elif stuck_secs > 60:
             note = (
                 f"\n\n🔍 <b>No peers found yet</b> ({int(stuck_secs)}s) — this "
                 f"torrent may have no active seeders, or its trackers aren't "
@@ -194,6 +233,9 @@ async def torrent_download(url: str, dest_dir: str, task_id: str, msg,
         "max-connection-per-server": "16",
         "split": "16",
         "follow-torrent": "mem",
+        "bt-tracker": _EXTRA_TRACKERS,
+        "bt-tracker-connect-timeout": "10",
+        "bt-tracker-timeout": "10",
     }
 
     if url.startswith("magnet:"):
