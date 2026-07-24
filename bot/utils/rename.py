@@ -70,7 +70,7 @@ _SE_RE = re.compile(
 
 # ── Audio channel notation — protect AAC2.0, AAC5.1, 7.1, 2.0 etc. ──
 # We protect these BEFORE separator replacement so dots aren't eaten
-_AUDIO_CH_RE = re.compile(r"(?i)([257][\.]1|2[\.]0)")
+_AUDIO_CH_RE = re.compile(r"(?i)(?<!\d)([257][\.]1|2[\.]0)(?!\d)")
 
 # ── Tech tags — STRIP these ───────────────────────────────────
 # Everything NOT in this list is KEPT (resolution, codec, source, audio)
@@ -235,13 +235,13 @@ def clean_name(name: str) -> str:
     # 7. Strip junk tech tags
     tags_part = _TECH_STRIP_RE.sub(" ", tags_part)
 
-    # 8. Strip common scene release group tags (e.g. -YIFY, -FGT, -RARBG at end)
+    # 8. Strip common scene release group tags (e.g. -YIFY, -FGT, -RARBG at
+    #    end). Scene release groups are ALWAYS hyphen-prefixed by convention
+    #    ("Title.Quality.Source-GROUPNAME") — a non-hyphenated all-caps-word
+    #    heuristic was tried before and removed: it couldn't tell a real
+    #    group name apart from a legitimate all-caps quality/edition tag
+    #    (HYBRID, UNCUT, PROPER...) that just happened to be the last word.
     tags_part = re.sub(r"(?i)\s*-\s*[A-Z0-9]{2,10}$", "", tags_part)
-    tags_part = re.sub(
-        r"(?i)\s+[A-Z]{2,8}$",
-        lambda mm: "" if mm.group().strip().isupper() else mm.group(),
-        tags_part,
-    )
 
     # 9. Restore protected tokens
     for key, val in _audio_map.items():

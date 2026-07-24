@@ -28,6 +28,20 @@ def _start_web_server():
 
 def _start_aria2():
     """aria2 handles BOTH multi-connection HTTP downloads and torrents/magnets."""
+    # --daemon=true makes aria2c fork and fully detach from this process —
+    # restarting the bot does NOT kill a previously-started aria2c. Without
+    # this, every config change here (DHT, tracker list, timeouts...) would
+    # silently never take effect: the new aria2c fails to bind the RPC port
+    # (already held by the stale one) and the bot keeps talking to the OLD
+    # daemon the whole time, with none of the current flags applied.
+    try:
+        subprocess.run(["pkill", "-f", f"aria2c.*rpc-listen-port={config.ARIA2_PORT}"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        import time as _time
+        _time.sleep(0.5)   # give the old process a moment to release the port
+    except Exception:
+        pass
+
     cmd = [
         "aria2c",
         "--enable-rpc",
@@ -62,7 +76,7 @@ def _start_aria2():
     ]
     try:
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print("[aria2] Started (HTTP downloads + torrents/magnets, DHT enabled).")
+        print("[aria2] Started fresh (HTTP downloads + torrents/magnets, DHT enabled).")
     except FileNotFoundError:
         print("[aria2] WARNING: aria2c not found.")
 

@@ -196,7 +196,17 @@ async def _build_filename(orig_name: str, prefix_tpl: str, suffix_tpl: str,
 
     # Assemble: [prefix] stem [suffix]
     parts = [p for p in [prefix_clean, stem, suffix_clean] if p]
-    return " ".join(parts) + ext
+    result = " ".join(parts) + ext
+
+    # Final safety net: no underscore should ever reach the uploaded
+    # filename, regardless of which step (clean_name, a user's custom
+    # rename regex, or a custom prefix/suffix template) left one behind.
+    # Only touch the stem — never the extension (irrelevant anyway, real
+    # extensions don't contain underscores).
+    r_stem, r_ext = os.path.splitext(result)
+    r_stem = re.sub(r"_+", " ", r_stem)
+    r_stem = re.sub(r"\s+", " ", r_stem).strip()
+    return r_stem + r_ext
 
 
 # ── Token info block — separate message sent as Telegram quoted reply ────────
