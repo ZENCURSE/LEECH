@@ -1,7 +1,7 @@
 # ── Telegram ──────────────────────────────────────────────────
-API_ID           = 28864343
-API_HASH         = "50f2a1b19f0fd9d50da2241c7c0cda40"
-BOT_TOKEN        = "8708566477:AAHXlW1Mx-wg6bFbshnEyALN4lLF3juKAws"
+API_ID           = 
+API_HASH         = ""
+BOT_TOKEN        = ""
 SESSION          = ""           # Pyrogram session string — leave blank for 2 GB limit
                                 # Fill with Premium account session for 4 GB uploads
 OWNER_ID         = 6426143861
@@ -12,8 +12,8 @@ AUTHORIZED_CHATS = [-1004467601602]           # e.g. [123456789, -1001234567890]
 # ── MongoDB ───────────────────────────────────────────────────
 # Paste your MongoDB Atlas URI here. Leave blank for flat-file fallback.
 # Example: "mongodb+srv://user:pass@cluster0.abcde.mongodb.net/?retryWrites=true"
-MONGO_URI = "mongodb+srv://newsudo:786780@cluster0.pbiae8a.mongodb.net/?appName=Cluster0"
-MONGO_DB  = "Cluster0"
+MONGO_URI = ""
+MONGO_DB  = ""
 
 # ── JDownloader (MyJDownloader.org) ──────────────────────────────────
 JD_EMAIL    = ""   # your MyJDownloader account email
