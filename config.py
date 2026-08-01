@@ -4,35 +4,34 @@
 # ═══════════════════════════════════════════════════════════════
 
 # ── Telegram ──────────────────────────────────────────────────
-API_ID           = 22574649
-API_HASH         = "e3730dd3cbdf1ac2c80e7b6ed6d06f13"
-BOT_TOKEN        = "8539709524:AAE-IvLSV5pxVO1n91N7Nr2mAv4y1dFoPbI"
-#BOT_TOKEN        = "8821970852:AAFKsbG3ii1DTSEt9FEAeKLPvDkps5Cp2eY"
+API_ID           = 12345576
+API_HASH         = "eg6gge7h7eh8eh8wuw"
+BOT_TOKEN        = "your-bot-token"
 SESSION          = ""           # Pyrogram session string — leave blank for 2 GB limit
                                 # Fill with Premium account session for 4 GB uploads
-OWNER_ID         = 5417874390
-LOG_CHANNEL      = -1002329590802
-AUTHORIZED_CHATS = [-1003882018027,-1003876799341,-1003312545501]           # e.g. [123456789, -1001234567890]
+OWNER_ID         = 36637377
+LOG_CHANNEL      = -1002329593883
+AUTHORIZED_CHATS = []           # e.g. [123456789, -1001234567890]
 
 
 # ── MongoDB ───────────────────────────────────────────────────
 # Paste your MongoDB Atlas URI here. Leave blank for flat-file fallback.
 # Example: "mongodb+srv://user:pass@cluster0.abcde.mongodb.net/?retryWrites=true"
-MONGO_URI = "mongodb+srv://pankajameher2:pankajameher2@cluster0.zoczhsw.mongodb.net/?appName=Cluster0"
+MONGO_URI = " "
 MONGO_DB  = "nxthub"
 
 # ── JDownloader (MyJDownloader.org) ──────────────────────────────────
-JD_EMAIL    = "me.pankaja@gmail.com"   # your MyJDownloader account email
-JD_PASS     = "Jdownloader@24"   # your MyJDownloader account password
+JD_EMAIL    = ""   # your MyJDownloader account email
+JD_PASS     = ""   # your MyJDownloader account password
 
 # --------- Mega ------------------------
-MEGA_EMAIL = "vikekil325@aspensif.com"
-MEGA_PASSWORD = "Rajangarg@234"
+MEGA_EMAIL = ""
+MEGA_PASSWORD = ""
 
 # ── Thumbnail APIs ────────────────────────────────────────────
-TMDB_API_KEY   = "135789526229bd260ddd6149f5489dda"
-OMDB_API_KEY   = "8285a8f6"
-FANART_API_KEY = "23b1406ab6b415e681ac750e42bd2b1e"
+TMDB_API_KEY   = ""
+OMDB_API_KEY   = ""
+FANART_API_KEY = ""
 
 # ── Download ──────────────────────────────────────────────────
 DOWNLOAD_DIR = "/downloads"
