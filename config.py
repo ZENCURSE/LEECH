@@ -1,12 +1,12 @@
 # ── Telegram ──────────────────────────────────────────────────
-API_ID           = 
+API_ID           = ""
 API_HASH         = ""
 BOT_TOKEN        = ""
 SESSION          = ""           # Pyrogram session string — leave blank for 2 GB limit
                                 # Fill with Premium account session for 4 GB uploads
-OWNER_ID         = 6426143861
-LOG_CHANNEL      = -1004329753754
-AUTHORIZED_CHATS = [-1004467601602]           # e.g. [123456789, -1001234567890]
+OWNER_ID         = ""
+LOG_CHANNEL      = ""
+AUTHORIZED_CHATS = [""]           # e.g. [123456789, -1001234567890]
 
 
 # ── MongoDB ───────────────────────────────────────────────────
@@ -49,7 +49,7 @@ ARIA2_PORT   = 6800
 ARIA2_SECRET = "Zencurse"              # Leave blank or set a secret token
 
 # ── Branding ──────────────────────────────────────────────────
-WATERMARK = "@Zen_Noob_Updates"
+WATERMARK = "@CodeRips"
 GROUP_LINK = "https://t.me/+Na6gm7tECLIyMTY1"   # Shown as a button so users can use the bot in the group
 
 # ── Encoding (FFmpeg) ─────────────────────────────────────────
@@ -59,7 +59,7 @@ GROUP_LINK = "https://t.me/+Na6gm7tECLIyMTY1"   # Shown as a button so users can
 # automatically forward every leeched file to the channel.
 # The bot must be an admin with "Post Messages" permission there.
 # Leave 0 to disable the dump channel feature.
-DUMP_CHANNEL     = -1002656513017             # e.g. -1001234567890
+DUMP_CHANNEL     = ""             # e.g. -1001234567890
 DUMP_CHANNEL_TAG = True          # Whether to tag the uploader's username in dump
 
 # ── Web Selection UI ──────────────────────────────────────────
