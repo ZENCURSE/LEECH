@@ -11,7 +11,6 @@ A powerful Telegram leech bot with integrated FFmpeg encoding, multi-source down
 | **Download** | HTTP/HTTPS, YouTube & 1000+ sites (yt-dlp), M3U8 streams, Torrent/Magnet (aria2), qBittorrent, Mega.nz, Telegram media re-upload |
 | **Direct Links** | MediaFire, PixelDrain, HubCloud, GDFlix, GoFile, BuzzHeavier, TeraBox, 1Fichier, KrakenFiles, WeTransfer, OneDrive, Yandex, Streamtape, DoodStream, FileLions/StreamWish, MP4Upload, Racaty, and 70+ more |
 | **JDLeech** | Premium multi-host resolving via MyJDownloader API |
-| **Encode** | H.264/H.265, custom CRF/preset/resolution/FPS, audio codec & bitrate, hardsub/softsub, ASS watermark overlay |
 | **Upload** | Auto-split >2 GB files, Premium 4 GB session, dump channel with username tag, custom or auto-generated HD thumbnail |
 | **Auto-Thumbnail** | Fanart.tv HD logo composite → TMDB backdrop+logo → iTunes poster → title-card fallback (4-tier waterfall) |
 | **Caption Tokens** | `{name}` `{size}` `{ext}` `{quality}` `{language}` `{codec}` `{audio}` `{fps}` `{date}` |
@@ -101,15 +100,6 @@ python main.py
 | `/leech` / `/l` | Alias for `/d` |
 | `/jdleech <url>` | Multi-host premium download via MyJDownloader |
 
-### 🎬 Encoding
-| Command | Description |
-|---|---|
-| `/encode` | Reply to a video to download & encode it |
-| `/encurl <url>` | Download a URL then encode it |
-| `/encsub` | Attach an external SRT/ASS subtitle to a video (no re-encode) |
-| `/encset` | Open interactive FFmpeg encoding settings |
-| `/vset` | View current encoding settings as text |
-
 ### 📊 Tasks & Status
 | Command | Description |
 |---|---|
@@ -139,13 +129,7 @@ python main.py
 - **Custom Thumbnail** — Set a custom thumbnail for all uploads
 - **Upload Mode** — Toggle between Media (video/audio) and Document mode
 - **Dump Channel** — Forward all uploads to an additional channel
-
-### 🎬 Encoding Settings
-- Codec (H.264 / H.265), CRF, Preset, Resolution, FPS
-- Audio: Codec, Bitrate, Sample Rate, Channels
-- Subtitles: Hardsub (burn-in) / Softsub (copy stream)
-- Watermark: ASS overlay from `bot/encoding/extras/watermark.ass`
-
+  
 ### 🏷 Rename Settings
 - **Prefix / Suffix** — Added to every uploaded filename
 - **Rename Regex** — Pattern stripped from filenames before upload
@@ -180,16 +164,6 @@ Requires `TMDB_API_KEY` and `FANART_API_KEY` set in `config.py` for tiers 1–3.
 
 ---
 
-## 🌐 Supported Direct-Link Hosts (70+)
-
-PixelDrain · HubCloud · GDFlix · MediaFire · GoFile · BuzzHeavier ·
-TeraBox (all domains) · 1Fichier · KrakenFiles · WeTransfer · OneDrive ·
-Yandex Disk · GitHub Releases · Streamtape · DoodStream · FileLions ·
-StreamWish · UploadHaven · DevUploads · Send.cm · Racaty · MP4Upload ·
-AKMFiles · StreamVid · StreamHub · and 50+ more via NEO-WZML engine
-
----
-
 ## 📦 Large File Handling
 
 | Scenario | Behaviour |
@@ -198,21 +172,6 @@ AKMFiles · StreamVid · StreamHub · and 50+ more via NEO-WZML engine
 | File ≤ 4 GB, SESSION set | Upload via Premium account session |
 | File > 2 GB, no SESSION | Auto-split into numbered `.partNN.ext` documents |
 | File > 4 GB, SESSION set | Auto-split into 4 GB parts |
-
----
-
-## 🎬 Encoding Settings Reference
-
-| Setting | Options |
-|---|---|
-| Codec | H.264 / H.265 |
-| CRF | 0–51 (lower = better quality, larger file) |
-| Preset | ultrafast / superfast / veryfast / fast / medium / slow |
-| Resolution | Source / 4K / 2K / 1080p / 720p / 576p / 480p / 360p |
-| FPS | Source / NTSC / PAL / Film / 23.976 / 30 / 60 |
-| Audio | Source / AAC / AC3 / OPUS / VORBIS / ALAC |
-| Subtitles | Hardsub (burn-in) / Softsub (copy stream) |
-| Watermark | ASS overlay from `bot/encoding/extras/watermark.ass` |
 
 ---
 
